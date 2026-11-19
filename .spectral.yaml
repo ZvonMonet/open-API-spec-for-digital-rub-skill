@@ -1,0 +1,180 @@
+# Правила линтинга OAS для skill oas-from-jira.
+# Каждое правило соответствует пункту [lint] в knowledge/oas-conventions.md.
+extends:
+  - spectral:oas
+
+rules:
+  # OAS-FILE-01
+  oas-version-3-0-3:
+    description: Версия стандарта — OpenAPI 3.0.3 (OAS-FILE-01).
+    severity: error
+    given: $
+    then:
+      field: openapi
+      function: pattern
+      functionOptions:
+        match: '^3\.0\.3$'
+
+  # OAS-INFO-01
+  info-description: error
+  info-contact: off
+
+  # OAS-FILE-07: в артефакте нет элементов, не следующих из требований
+  oas3-unused-component: error
+
+  # OAS-INFO-04
+  info-x-jira-keys:
+    description: В info должен быть x-jira-keys со списком задач-источников (OAS-INFO-04).
+    severity: error
+    given: $.info
+    then:
+      field: x-jira-keys
+      function: truthy
+
+  # OAS-SRV-01
+  servers-https-only:
+    description: Серверы — только https (OAS-SRV-01).
+    severity: error
+    given: $.servers[*].url
+    then:
+      function: pattern
+      functionOptions:
+        match: '^https://'
+
+  # OAS-PATH-01, OAS-PATH-02
+  paths-kebab-case:
+    description: Сегменты путей — kebab-case, параметры — {camelCase} (OAS-PATH-01, OAS-PATH-02).
+    severity: error
+    given: $.paths
+    then:
+      field: '@key'
+      function: pattern
+      functionOptions:
+        match: '^(\/([a-z0-9]+(-[a-z0-9]+)*|\{[a-z][a-zA-Z0-9]*\}))+$'
+
+  # OAS-PATH-05
+  path-keys-no-trailing-slash: error
+
+  # OAS-OP-01
+  operation-operationId: error
+  operation-summary-required:
+    description: У операции должен быть summary (OAS-OP-01).
+    severity: error
+    given: $.paths[*][get,put,post,delete,patch]
+    then:
+      field: summary
+      function: truthy
+  operation-summary-length:
+    description: summary не длиннее 80 символов (OAS-OP-01).
+    severity: warn
+    given: $.paths[*][get,put,post,delete,patch].summary
+    then:
+      function: length
+      functionOptions:
+        max: 80
+  operation-description: error
+  operation-tags: error
+  operation-operationId-camel-case:
+    description: operationId — camelCase (OAS-OP-01).
+    severity: error
+    given: $.paths[*][get,put,post,delete,patch].operationId
+    then:
+      function: casing
+      functionOptions:
+        type: camel
+
+  # OAS-OP-02
+  operation-x-jira-key:
+    description: У операции должен быть x-jira-key (OAS-OP-02).
+    severity: error
+    given: $.paths[*][get,put,post,delete,patch]
+    then:
+      field: x-jira-key
+      function: truthy
+
+  # OAS-OP-06
+  operation-tag-defined: error
+
+  # OAS-SCH-02
+  properties-camel-case:
+    description: Свойства схем — camelCase (OAS-SCH-02).
+    severity: error
+    given: $..properties
+    then:
+      field: '@key'
+      function: casing
+      functionOptions:
+        type: camel
+
+  # OAS-SCH-03
+  enum-upper-snake-case:
+    description: Значения enum — UPPER_SNAKE_CASE (OAS-SCH-03).
+    severity: error
+    given: $..[?(@.type == 'string' && @.enum && !(@.enum.length == 1 && @.enum[0] == 'no-store'))].enum[*]
+    then:
+      function: pattern
+      functionOptions:
+        match: '^[A-Z][A-Z0-9]*(_[A-Z0-9]+)*$'
+
+  # OAS-SCH-07
+  property-description:
+    description: У каждого свойства должно быть описание (OAS-SCH-07).
+    severity: warn
+    given: $.components.schemas..properties[*]
+    then:
+      field: description
+      function: truthy
+
+  # OAS-ERR-01
+  error-responses-problem-json:
+    description: Ответы 4xx/5xx — application/problem+json (OAS-ERR-01).
+    severity: error
+    given: $.components.responses[?(@property != 'Location')].content
+    then:
+      function: schema
+      functionOptions:
+        schema:
+          type: object
+          required: ['application/problem+json']
+
+  inline-error-responses-problem-json:
+    description: Inline-ответы 4xx/5xx в операциях — application/problem+json (OAS-ERR-01).
+    severity: error
+    given: $.paths[*][*].responses[?(@property.match(/^[45]/))].content
+    then:
+      function: schema
+      functionOptions:
+        schema:
+          type: object
+          required: ['application/problem+json']
+
+  # OAS-ERR-04
+  operation-required-responses:
+    description: Операция описывает минимум 400, 401 и 500 (OAS-ERR-04).
+    severity: error
+    given: $.paths[*][get,put,post,delete,patch].responses
+    then:
+      function: schema
+      functionOptions:
+        schema:
+          type: object
+          required: ['400', '401', '500']
+
+  # OAS-SEC-01
+  global-bearer-security:
+    description: Корневой security должен ссылаться на bearerAuth (OAS-SEC-01).
+    severity: error
+    given: $
+    then:
+      field: security
+      function: truthy
+
+  # SD-API-02 (sensitive-data): нет чувствительных данных в query
+  no-sensitive-query-params:
+    description: Телефон, номер счёта и подобные данные не передаются в query (SD-API-02).
+    severity: error
+    given: $..parameters[?(@.in == 'query')].name
+    then:
+      function: pattern
+      functionOptions:
+        notMatch: '/(phone|account|passport|snils|inn$|card|pan$|email|fullname|lastname|firstname)/i'

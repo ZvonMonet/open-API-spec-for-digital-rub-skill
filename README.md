@@ -1,2 +1,17 @@
-# open-API-spec-for-digital-rub-skill
-(!!!EDUCATIONAL PROJECT!!!)  A tool designed to assist in generating Open API specifications for banking transactions (creating a wallet, transferring funds from a regular ruble account to a digital ruble wallet account) related to the digital ruble.
+# oas-from-jira
+
+Учебный проект: skill для ИИ-агента, который по задаче и пользовательской истории из Jira готовит **OpenAPI Specification** и предлагает её через Pull Request.
+
+Продукт для примера — вымышленный модуль **КошелёкЦР** (кошелёк цифрового рубля для небольшого банка). Все данные в репозитории синтетические.
+
+- Инструкции для агента — [AGENTS.md](AGENTS.md)
+- Skill — [skills/oas-from-jira/SKILL.md](skills/oas-from-jira/SKILL.md)
+- Знания — [knowledge/](knowledge/)
+- Результаты — [artifacts/](artifacts/)
+- Журнал ошибок агента — [ai-log.md](ai-log.md)
+
+Проверка артефакта:
+
+```bash
+npx @stoplight/spectral-cli@6 lint artifacts/<имя>.yaml --ruleset .spectral.yaml
+```
