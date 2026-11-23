@@ -92,6 +92,28 @@ rules:
       field: x-jira-key
       function: truthy
 
+  # OAS-HDR-03 / BR-IDM-01: Idempotency-Key у каждого POST
+  post-idempotency-key:
+    description: У каждого POST должен быть обязательный заголовок Idempotency-Key (OAS-HDR-03).
+    severity: error
+    given: $.paths[*].post
+    then:
+      function: schema
+      functionOptions:
+        schema:
+          type: object
+          required: [parameters]
+          properties:
+            parameters:
+              type: array
+              contains:
+                type: object
+                required: [name, in, required]
+                properties:
+                  name: { const: Idempotency-Key }
+                  in: { const: header }
+                  required: { const: true }
+
   # OAS-OP-06
   operation-tag-defined: error
 
