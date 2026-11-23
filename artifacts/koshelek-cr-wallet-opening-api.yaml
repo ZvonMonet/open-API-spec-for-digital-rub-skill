@@ -457,15 +457,20 @@ paths:
 
         **Недоступность платформы:** `503 PLATFORM_UNAVAILABLE` / `504 UPSTREAM_TIMEOUT`,
         статус заявки не меняется (AC-17).
+
+        **Идемпотентность:** если сервер уже перевёл заявку в `KEYS_PENDING`, а клиент не получил ответ
+        (например, `504`), повтор с тем же `Idempotency-Key` возвращает тот же `200`, а не
+        `409 INVALID_APPLICATION_STATE`. Тот же ключ с другим телом — `422 IDEMPOTENCY_KEY_REUSED`.
       tags: [Wallet Opening]
       x-jira-key: SCRUM-2194
       x-acceptance-criteria: [AC-10, AC-11, AC-17, AC-18]
-      x-business-rules: [BR-GEN-01, BR-GEN-02, BR-DR-OPEN-07, BR-DR-OPEN-08, BR-DR-OPEN-09, BR-TIME-03]
+      x-business-rules: [BR-GEN-01, BR-GEN-02, BR-DR-OPEN-07, BR-DR-OPEN-08, BR-DR-OPEN-09, BR-TIME-03, BR-IDM-01, BR-IDM-02]
       x-external-systems: [DR_PLATFORM]
       x-assumption: Актуальность версии договора проверяется запросом к платформе ЦР (integrations.md, таблица ошибок платформы); в Task шаг 8 не помечен как обращение к внешней системе.
       parameters:
         - $ref: '#/components/parameters/XRequestId'
         - $ref: '#/components/parameters/ApplicationId'
+        - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
         required: true
         content:
@@ -536,6 +541,8 @@ paths:
                     status: 409
                     code: INVALID_APPLICATION_STATE
                     traceId: 0af7651916cd43dd8448eb211c80319c
+        '422':
+          $ref: '#/components/responses/IdempotencyKeyReused'
         '500':
           $ref: '#/components/responses/InternalServerError'
         '503':
@@ -673,13 +680,17 @@ paths:
         `KEYS_PENDING` (до передачи запроса на сертификат); иначе `409 INVALID_APPLICATION_STATE`.
 
         **Результат:** заявка в финальном статусе `CANCELLED`. Внешние системы не вызываются.
+
+        **Идемпотентность:** повтор с тем же `Idempotency-Key` после успешной отмены возвращает тот же `200`
+        с `CANCELLED`, а не `409 INVALID_APPLICATION_STATE`. Тот же ключ с другим телом — `422 IDEMPOTENCY_KEY_REUSED`.
       tags: [Wallet Opening]
       x-jira-key: SCRUM-2194
       x-acceptance-criteria: [AC-12, AC-18]
-      x-business-rules: [BR-GEN-01, BR-GEN-02]
+      x-business-rules: [BR-GEN-01, BR-GEN-02, BR-IDM-01, BR-IDM-02]
       parameters:
         - $ref: '#/components/parameters/XRequestId'
         - $ref: '#/components/parameters/ApplicationId'
+        - $ref: '#/components/parameters/IdempotencyKey'
       responses:
         '200':
           description: Заявка отменена.
@@ -708,6 +719,8 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           $ref: '#/components/responses/InvalidApplicationState'
+        '422':
+          $ref: '#/components/responses/IdempotencyKeyReused'
         '500':
           $ref: '#/components/responses/InternalServerError'
 
