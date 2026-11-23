@@ -4,18 +4,18 @@
 
 ## Назначение репозитория
 
-Skill `oas-from-jira`: по задаче (Task) и связанной пользовательской истории (Story) из Jira агент готовит **OpenAPI Specification** и выкладывает её в этот репозиторий через Pull Request.
+Skill `oas-from-jira`: по задаче (Task) и связанной пользовательской истории (Story) из Jira агент готовит **OpenAPI Specification** и **sequence-диаграмму PlantUML** (с кодами ошибок и ретраями) и выкладывает их в этот репозиторий через Pull Request. Оба артефакта строятся из одних источников и одной таблицы трассировки.
 
 ## Структура
 
 | Путь | Что лежит | Кто меняет |
 |---|---|---|
 | `skills/oas-from-jira/SKILL.md` | Инструкция skill: когда применять, вход, шаги, формат результата, чек-лист, запреты. | Автор skill |
-| `skills/oas-from-jira/templates/` | Шаблоны Task и Story в Jira, шаблоны контекста, шаблон отчёта проверки. | Автор skill |
+| `skills/oas-from-jira/templates/` | Шаблоны Task и Story в Jira, шаблоны контекста, шаблон отчёта проверки (`artifact-check.md`). | Автор skill |
 | `skills/oas-from-jira/examples/` | Примеры оформленных задач. | Автор skill |
 | `knowledge/` | Общие знания для всех задач: глоссарий, бизнес-правила, чувствительные данные, соглашения по OAS. | Автор skill |
 | `knowledge/context/<продукт>/` | Контекст продукта: ФТ, НФТ, внешние интеграции и контракты. Ссылки вида `context/...` в задачах Jira указывают сюда. | Автор skill / пользователь |
-| `artifacts/` | Результаты: `<имя>.yaml` и отчёт `<имя>-check.md`. | Агент (черновик) → человек (правки) |
+| `artifacts/` | Результаты: OAS `<имя>-api.yaml`, диаграмма `<имя>-sequence.puml`, отчёт `<имя>-api-check.md`. | Агент (черновик) → человек (правки) |
 | `ai-log.md` | Журнал ошибок агента и принятых мер. | Человек |
 | `.spectral.yaml` | Правила линтинга OAS. | Автор skill |
 
@@ -23,15 +23,17 @@ Skill `oas-from-jira`: по задаче (Task) и связанной польз
 
 1. Загрузить skill: `skills/oas-from-jira/SKILL.md`.
 2. Следовать его шагам. Источники требований по приоритету: **AC в Story → Task → `knowledge/context/` → `knowledge/`**.
-3. Проверить артефакт: `npx @stoplight/spectral-cli@6 lint artifacts/<имя>.yaml --ruleset .spectral.yaml` — без ошибок.
-4. Создать Pull Request (см. ниже).
+3. Проверить OAS: `npx @stoplight/spectral-cli@6 lint artifacts/<имя>-api.yaml --ruleset .spectral.yaml` — без ошибок.
+4. Проверить диаграмму: `java -jar plantuml.jar -checkonly artifacts/<имя>-sequence.puml` — код возврата 0; сверка бизнес-кодов OAS ↔ диаграмма (команда — в SKILL.md, шаг 9) — пустой вывод.
+5. Создать Pull Request (см. ниже).
 
 ## Правила Pull Request
 
 - Ветка: `oas/<ключ-task>-<краткое-имя>`, например `oas/SCRUM-2194-wallet-opening`.
 - **Первый коммит — черновик агента** без ручных правок, сообщение: `draft(agent): <ключ-task> <описание>`. Правки человека — отдельными коммитами `fix(human): ...`. Так в истории PR видно, где черновик агента, а где правки.
-- Название PR: `<ключ-task>: <фича> — OpenAPI`.
-- Описание PR: ключи Task и Story, список файлов, результат Spectral, ссылка на `-check.md`, открытые вопросы.
+- Название PR: `<ключ-task>: <фича> — OpenAPI и sequence-диаграмма` (если в PR только один из артефактов — `— OpenAPI` или `— sequence-диаграмма`).
+- Описание PR: ключи Task и Story, список файлов, результат Spectral, результат проверки PlantUML, ссылка на `-check.md`, открытые вопросы.
+- PNG и другие рендеры диаграммы в репозиторий не коммитятся: источник истины — `.puml`.
 - PR не мержится агентом.
 
 ## Запреты
