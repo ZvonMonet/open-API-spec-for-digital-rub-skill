@@ -129,9 +129,9 @@ npx @stoplight/spectral-cli@6 lint artifacts/<имя>-api.yaml --ruleset .spectr
 ### 9. Проверить диаграмму
 ```bash
 java -jar plantuml.jar -checkonly artifacts/<имя>-sequence.puml   # синтаксис: код возврата 0
-java -jar plantuml.jar -tpng -o /tmp/puml artifacts/<имя>-sequence.puml   # рендер для просмотра
+java -DPLANTUML_LIMIT_SIZE=16384 -jar plantuml.jar -tpng -o /tmp/puml artifacts/<имя>-sequence.puml   # рендер для просмотра
 ```
-Открыть PNG и проверить читаемость: подписи не обрезаны, ветки не пустые. PNG в репозиторий не коммитится.
+Без `-DPLANTUML_LIMIT_SIZE` PlantUML обрезает изображение на 4096 px, и низ длинной диаграммы при просмотре не виден. Открыть PNG целиком (при необходимости — частями) и проверить читаемость: подписи не обрезаны, ветки не пустые. PNG в репозиторий не коммитится.
 
 Сверка бизнес-кодов OAS ↔ диаграмма (вывод должен быть пустым):
 ```bash
