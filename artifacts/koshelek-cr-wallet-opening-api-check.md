@@ -231,4 +231,6 @@ java -jar plantuml-1.2024.7.jar -checkonly artifacts/koshelek-cr-wallet-opening-
 
 ## 11. Проверка человеком
 
-<!-- Заполняет проверяющий -->
+| # | Замечание | Тип | Исправление | ai-log |
+|---|---|---|---|---|
+| 1 | `acceptWalletApplicationContract` и `cancelWalletApplication` — `POST` без `Idempotency-Key`. Если сервер выполнил переход, а клиент получил `504`, повтор без ключа вернёт `409 INVALID_APPLICATION_STATE`, и приложение не узнает, выполнен ли шаг. | Ошибка агента | Добавлены `Idempotency-Key` и `422 IDEMPOTENCY_KEY_REUSED` в обе операции; на диаграмме — ключ в сообщениях, ветка `422` и `opt` повтора с сохранённым ответом. Коммит `fix(human)`. | ERR-01 |

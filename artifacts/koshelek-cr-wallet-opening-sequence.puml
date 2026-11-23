@@ -141,9 +141,11 @@ end
 User -> App : читает договор, правила, тарифы
 
 == Шаг 8. Принятие договора ==
-App -> M : POST /wallet-applications/{applicationId}/contract-acceptance\n(acceptWalletApplicationContract)\ncontractId, contractVersion, accepted = true
+App -> M : POST /wallet-applications/{applicationId}/contract-acceptance\n(acceptWalletApplicationContract)\nIdempotency-Key, contractId, contractVersion, accepted = true
 alt чужая / несуществующая заявка (AC-18)
   M --> App : 404 RESOURCE_NOT_FOUND
+else тот же Idempotency-Key, другое тело (BR-IDM-02)
+  M --> App : 422 IDEMPOTENCY_KEY_REUSED
 else заявка не в CONTRACT_PENDING
   M --> App : 409 INVALID_APPLICATION_STATE
 else заявка в CONTRACT_PENDING
@@ -159,6 +161,10 @@ else заявка в CONTRACT_PENDING
   else версия актуальна (AC-10, BR-DR-OPEN-07)
     DRP --> M : версия совпадает
     M --> App : 200 acceptedContractVersion, contractAcceptedAt\n[S] KEYS_PENDING
+    opt ответ не дошёл (504), повтор с тем же Idempotency-Key (BR-IDM-01)
+      App -> M : тот же запрос, тот же Idempotency-Key
+      M --> App : 200 — сохранённый ответ, [S] KEYS_PENDING\n(не 409 INVALID_APPLICATION_STATE)
+    end
   end
 end
 
@@ -273,13 +279,19 @@ end
 
 == Альтернативы на любом шаге до передачи CSR ==
 opt клиент отменяет заявку или отказывается от договора (A6, AC-12)
-  App -> M : POST /wallet-applications/{applicationId}/cancel\n(cancelWalletApplication)
+  App -> M : POST /wallet-applications/{applicationId}/cancel\n(cancelWalletApplication)\nIdempotency-Key
   alt чужая / несуществующая заявка (AC-18)
     M --> App : 404 RESOURCE_NOT_FOUND
+  else тот же Idempotency-Key, другое тело (BR-IDM-02)
+    M --> App : 422 IDEMPOTENCY_KEY_REUSED
   else заявка не в CREATED | ESIA_PENDING | CONTRACT_PENDING | KEYS_PENDING
     M --> App : 409 INVALID_APPLICATION_STATE
   else
     M --> App : 200 [S] CANCELLED
+    opt ответ не дошёл, повтор с тем же Idempotency-Key (BR-IDM-01)
+      App -> M : тот же запрос, тот же Idempotency-Key
+      M --> App : 200 — сохранённый ответ, [S] CANCELLED
+    end
   end
 end
 opt прошло 24 ч, заявка в CREATED | ESIA_PENDING | CONTRACT_PENDING | KEYS_PENDING (A10, AC-19)
