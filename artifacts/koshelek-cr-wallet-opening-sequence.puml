@@ -1,0 +1,289 @@
+@startuml koshelek-cr-wallet-opening-sequence
+' Высота ~7300 px. Если редактор обрезает PNG на 4096 px — смотреть в SVG
+' или запускать с -DPLANTUML_LIMIT_SIZE=16384.
+title КошелёкЦР — открытие кошелька цифрового рубля\nSCRUM-2194 / SCRUM-2196 · OAS koshelek-cr-wallet-opening-api.yaml v1.0.0
+autonumber "<b>[00]"
+skinparam responseMessageBelowArrow true
+skinparam sequenceMessageAlign left
+skinparam noteFontSize 11
+
+actor "Клиент" as User
+participant "Мобильное\nприложение" as App
+participant "КошелёкЦР" as M
+box "Внешние системы" #F5F5F5
+  participant "АБС\n(CORE_BANKING)" as ABS
+  participant "Госуслуги\n(ESIA)" as ESIA
+  participant "Платформа ЦР\n(DR_PLATFORM)" as DRP
+  participant "Антифрод\n(ANTIFRAUD)" as AF
+end box
+
+legend top left
+  Во всех операциях API: 400 VALIDATION_ERROR, 401 UNAUTHORIZED, 500 INTERNAL_ERROR — на схеме не повторяются.
+  Пунктир — ответ; <b>[S]</b> — статус заявки после шага; ошибки — application/problem+json, поле code.
+  Таймауты и повторы — integrations.md; опрос и лимиты — non-functional-requirements.md.
+endlegend
+
+== Шаг 1. Выбор типа кошелька [UI] ==
+User -> App : «Открыть кошелёк», тип: личный / ИП
+
+== Шаг 2. Создание заявки ==
+App -> M : POST /wallet-applications\n(createWalletApplication)\nIdempotency-Key, ownerType
+alt превышен лимит: 5 заявок в час на клиента (NFR-RATE-01)
+  M --> App : 429 TOO_MANY_REQUESTS, Retry-After
+else повтор с тем же Idempotency-Key и тем же телом (AC-05, BR-IDM-01)
+  M --> App : 201 Created — та же заявка, новая не создаётся
+else тот же Idempotency-Key, другое тело (BR-IDM-02)
+  M --> App : 422 IDEMPOTENCY_KEY_REUSED
+else новый запрос
+  loop до 2 попыток [таймаут 1 с, повтор 1 раз — только чтение, INT-ABS-01]
+    M -> ABS : INT-ABS-01 Профиль клиента
+    ABS --> M : возраст, гражданство, идентификация,\nблокировка, признак ИП
+  end
+  alt АБС недоступна после повтора (AC-17, BR-TIME-03)
+    M --> App : 503 CORE_BANKING_UNAVAILABLE, Retry-After\n/ 504 UPSTREAM_TIMEOUT
+    note right of App : заявка не создана;\nповтор позже с тем же Idempotency-Key (NFR-AV-04)
+  else клиент не идентифицирован / заблокирован (BR-GEN-03, BR-GEN-04)
+    M --> App : 403 IDENTIFICATION_REQUIRED / CLIENT_BLOCKED
+  else младше 18 лет / не гражданин РФ (AC-02, BR-DR-OPEN-01)
+    M --> App : 422 CLIENT_NOT_ELIGIBLE, reason: AGE / CITIZENSHIP
+  else ownerType = SOLE_PROPRIETOR, клиент не ИП (AC-01b, BR-DR-OPEN-15)
+    M --> App : 422 CLIENT_NOT_ELIGIBLE, reason: NOT_SOLE_PROPRIETOR
+  else кошелёк этого типа уже открыт через банк (AC-03, BR-DR-OPEN-04, 05)
+    M --> App : 409 WALLET_ALREADY_EXISTS, ownerType
+  else есть незавершённая заявка того же типа (AC-04)
+    M --> App : 409 APPLICATION_IN_PROGRESS, applicationId
+  else проверки пройдены (AC-01, AC-01a)
+    M --> App : 201 Created, Location\n[S] CREATED, expiresAt = +24 ч
+  end
+end
+
+== Шаг 3. Ссылка на Госуслуги ==
+App -> M : POST /wallet-applications/{applicationId}/esia-authorization\n(createEsiaAuthorization)\nIdempotency-Key
+alt чужая / несуществующая заявка (AC-18, BR-GEN-02)
+  M --> App : 404 RESOURCE_NOT_FOUND
+else заявка не в CREATED (в т. ч. финальный статус, AC-19)
+  M --> App : 409 INVALID_APPLICATION_STATE
+else тот же Idempotency-Key, другое тело (BR-IDM-02)
+  M --> App : 422 IDEMPOTENCY_KEY_REUSED
+else заявка в CREATED
+  M -> ESIA : INT-ESIA-01 Запрос авторизации (state = id заявки)
+  note right of M : Допущение A-06: таймаут и повтор для ЕСИА\nв integrations.md не заданы — без повтора
+  alt ЕСИА недоступна / не ответила (E1, AC-17)
+    ESIA --> M : ошибка / нет ответа
+    M --> App : 503 PLATFORM_UNAVAILABLE, Retry-After\n/ 504 UPSTREAM_TIMEOUT\n[S] CREATED — без изменений
+    opt повтор клиентом (E1)
+      App -> M : тот же запрос, тот же Idempotency-Key
+    end
+  else ссылка сформирована (AC-06)
+    ESIA --> M : URL авторизации
+    M --> App : 200 authorizationUrl\n[S] ESIA_PENDING
+  end
+end
+
+== Шаг 4. Авторизация в Госуслугах [UI] ==
+App -> ESIA : переход по authorizationUrl
+User -> ESIA : вход и согласие на передачу данных
+ESIA -> M : INT-ESIA-02 Результат авторизации\n(служебный endpoint, вне клиентского API)
+note right of M : код авторизации, токены и данные ЕСИА\nклиенту не возвращаются (SD-API-16)
+alt клиент отказал в согласии (A4, AC-07)
+  M -> M : [S] REJECTED (ESIA_CONSENT_DENIED)
+else учётная запись не подтверждена (A4, AC-07)
+  M -> M : [S] REJECTED (ESIA_ACCOUNT_NOT_CONFIRMED)
+else данные получены
+  group Шаг 5. Проверка счёта на платформе
+    M -> DRP : INT-DRP-01 Проверка наличия счёта (тип владельца)
+    note right of M : таймаут 1,5 с; повтор в integrations.md не задан —\nбез повтора (A-06); поведение при недоступности — открытый вопрос
+    alt счёт этого типа открыт через другой банк (A5, AC-08)
+      DRP --> M : счёт есть
+      M -> M : [S] REJECTED (WALLET_ALREADY_EXISTS)
+    else счёта нет
+      DRP --> M : счёта нет
+      M -> M : [S] CONTRACT_PENDING
+    end
+  end
+end
+
+== Шаг 11a. Опрос статуса после Госуслуг ==
+loop каждые 2 с, не дольше 60 с (NFR-PERF-03), пока ESIA_PENDING
+  App -> M : GET /wallet-applications/{applicationId}\n(getWalletApplication)
+  alt чаще 1 раза в секунду (NFR-RATE-03)
+    M --> App : 429 TOO_MANY_REQUESTS, Retry-After
+  else чужая / несуществующая заявка (AC-18)
+    M --> App : 404 RESOURCE_NOT_FOUND
+  else
+    M --> App : 200 [S] ESIA_PENDING | CONTRACT_PENDING\n| REJECTED (ESIA_CONSENT_DENIED / ESIA_ACCOUNT_NOT_CONFIRMED / WALLET_ALREADY_EXISTS)
+  end
+end
+note right of App : через 60 с без финального статуса —\n«заявка в обработке» (NFR-PERF-03)
+
+== Шаг 6. Получение договора ==
+App -> M : GET /wallet-applications/{applicationId}/contract\n(getWalletApplicationContract)
+alt чужая / несуществующая заявка (AC-18)
+  M --> App : 404 RESOURCE_NOT_FOUND
+else заявка не в CONTRACT_PENDING
+  M --> App : 409 INVALID_APPLICATION_STATE
+else заявка в CONTRACT_PENDING
+  M -> DRP : INT-DRP-02 Актуальный договор
+  note right of M : таймаут 1,5 с; без повтора (A-06)
+  alt платформа недоступна / таймаут (E1, AC-17)
+    DRP --> M : ошибка / нет ответа
+    M --> App : 503 PLATFORM_UNAVAILABLE, Retry-After\n/ 504 UPSTREAM_TIMEOUT
+    opt повтор клиентом (E1; GET идемпотентен)
+      App -> M : тот же запрос
+    end
+  else договор получен (AC-09)
+    DRP --> M : id и версия договора, ссылки
+    M --> App : 200 contractId, contractVersion,\ndocumentUrl, platformRulesUrl, tariffsUrl
+  end
+end
+
+== Шаг 7. Клиент изучает условия [UI] ==
+User -> App : читает договор, правила, тарифы
+
+== Шаг 8. Принятие договора ==
+App -> M : POST /wallet-applications/{applicationId}/contract-acceptance\n(acceptWalletApplicationContract)\ncontractId, contractVersion, accepted = true
+alt чужая / несуществующая заявка (AC-18)
+  M --> App : 404 RESOURCE_NOT_FOUND
+else заявка не в CONTRACT_PENDING
+  M --> App : 409 INVALID_APPLICATION_STATE
+else заявка в CONTRACT_PENDING
+  M -> DRP : INT-DRP-02 Актуальная версия договора
+  note right of M : Допущение A-03: версия сверяется с платформой;\nтаймаут 1,5 с; без повтора (A-06)
+  alt платформа недоступна / таймаут (AC-17)
+    DRP --> M : ошибка / нет ответа
+    M --> App : 503 PLATFORM_UNAVAILABLE, Retry-After\n/ 504 UPSTREAM_TIMEOUT\n[S] CONTRACT_PENDING — без изменений
+  else версия устарела (A7, AC-11, BR-DR-OPEN-09)
+    DRP --> M : актуальна другая версия
+    M --> App : 409 CONTRACT_VERSION_OUTDATED
+    note right of App : запросить договор заново — шаг 6
+  else версия актуальна (AC-10, BR-DR-OPEN-07)
+    DRP --> M : версия совпадает
+    M --> App : 200 acceptedContractVersion, contractAcceptedAt\n[S] KEYS_PENDING
+  end
+end
+
+== Шаг 9. Создание ключей ЭП на устройстве [UI] ==
+App -> App : пара ключей ЭП и CSR;\nзакрытый ключ остаётся на устройстве (BR-DR-OPEN-10)
+
+== Шаг 10. Передача CSR и открытие счёта ==
+App -> M : POST /wallet-applications/{applicationId}/certificate-requests\n(submitCertificateRequest)\nIdempotency-Key, csr, keyAlgorithm
+alt чужая / несуществующая заявка (AC-18)
+  M --> App : 404 RESOURCE_NOT_FOUND
+else заявка не в KEYS_PENDING
+  M --> App : 409 INVALID_APPLICATION_STATE
+else тот же Idempotency-Key, другое тело (BR-IDM-02)
+  M --> App : 422 IDEMPOTENCY_KEY_REUSED
+else заявка в KEYS_PENDING
+  opt ownerType = SOLE_PROPRIETOR (BR-DR-OPEN-15)
+    loop до 2 попыток [таймаут 1 с, повтор 1 раз — только чтение, INT-ABS-01]
+      M -> ABS : INT-ABS-01 Сведения об ИП
+      ABS --> M : ОГРНИП, ИНН, наименование
+    end
+  end
+  alt АБС недоступна после повтора (AC-17)
+    M --> App : 503 CORE_BANKING_UNAVAILABLE, Retry-After\n/ 504 UPSTREAM_TIMEOUT\n[S] KEYS_PENDING — без изменений
+    opt повтор клиентом (E1)
+      App -> M : тот же запрос, тот же Idempotency-Key
+    end
+  else сведения получены или не нужны
+    M -> AF : INT-AF-01 Оценка заявки (BR-AF-01)
+    note right of M : таймаут 500 мс, без повтора;\nпри таймауте / недоступности — считать REVIEW
+    alt DENY (A8, AC-14, BR-AF-03)
+      AF --> M : DENY
+      M --> App : 202 Accepted, Location\n[S] REJECTED (OPERATION_DECLINED_BY_SECURITY) — без деталей
+    else REVIEW или таймаут антифрода (A8, AC-14)
+      AF --> M : REVIEW / нет ответа
+      M --> App : 202 Accepted, Location\n[S] ON_REVIEW
+    else ALLOW
+      AF --> M : ALLOW
+      M -> DRP : INT-DRP-03 Открытие счёта: CSR, тип владельца,\nверсия договора, сведения об ИП (асинхронно)
+      note right of M : подтверждение приёма — 1,5 с, без повтора (A-06)
+      alt платформа не приняла запрос (E1, AC-17)
+        DRP --> M : ошибка / нет подтверждения
+        M --> App : 503 PLATFORM_UNAVAILABLE, Retry-After\n/ 504 UPSTREAM_TIMEOUT\n[S] KEYS_PENDING — без изменений
+        opt повтор клиентом (E1, NFR-AV-04)
+          App -> M : тот же запрос, тот же Idempotency-Key
+        end
+      else запрос принят (AC-13)
+        DRP --> M : принято
+        M --> App : 202 Accepted, Location\n[S] PROCESSING
+      end
+    end
+  end
+end
+
+== Асинхронно: ручная проверка и результат платформы ==
+opt заявка в ON_REVIEW
+  AF -> M : INT-AF-03 Решение по ручной проверке (событие)
+  alt DECLINED
+    M -> M : [S] REJECTED (OPERATION_DECLINED_BY_SECURITY)
+  else APPROVED
+    M -> DRP : INT-DRP-03 Открытие счёта (асинхронно)
+    M -> M : [S] PROCESSING
+  end
+end
+opt заявка в PROCESSING
+  alt результат за 30 с не пришёл (NFR-AV-03)
+    M -> DRP : INT-DRP-08 Статус операции
+    note right of M : повторная отправка без уточнения статуса запрещена;\nзаявка остаётся в PROCESSING
+  end
+  DRP -> M : результат открытия счёта\n(служебный, вне клиентского API)
+  alt счёт открыт (AC-15)
+    M -> M : [S] COMPLETED, walletId
+  else отказ в выпуске сертификата (A9)
+    M -> M : [S] REJECTED (CERTIFICATE_ISSUE_FAILED)
+  else отказ в открытии счёта (A9, BR-DR-OPEN-14, BR-AML-01)
+    M -> M : [S] REJECTED (WALLET_OPENING_REFUSED)
+  else техническая ошибка без возможности повтора (business-rules §8.1)
+    M -> M : [S] FAILED
+  end
+end
+
+== Шаг 11. Опрос статуса до финального ==
+loop каждые 2 с, не дольше 60 с (NFR-PERF-03), пока PROCESSING | ON_REVIEW
+  App -> M : GET /wallet-applications/{applicationId}\n(getWalletApplication)
+  alt чаще 1 раза в секунду (NFR-RATE-03)
+    M --> App : 429 TOO_MANY_REQUESTS, Retry-After
+  else чужая / несуществующая заявка (AC-18)
+    M --> App : 404 RESOURCE_NOT_FOUND
+  else
+    M --> App : 200 [S] PROCESSING | ON_REVIEW | COMPLETED (walletId)\n| REJECTED (rejectReason) | FAILED
+  end
+end
+note right of App : через 60 с без финального статуса —\n«заявка в обработке» (NFR-PERF-03)
+
+== Шаг 12. Пароль к кошельку [UI] ==
+User -> App : создаёт пароль; хранится на устройстве,\nв API не передаётся
+
+== Шаг 13. Данные кошелька ==
+App -> M : GET /wallets/{walletId}\n(getWallet)
+alt чужой / несуществующий кошелёк (BR-GEN-02)
+  M --> App : 404 RESOURCE_NOT_FOUND
+else кошелёк клиента
+  M -> DRP : INT-DRP-04 Данные кошелька
+  note right of M : таймаут 1,5 с; без повтора (A-06)
+  alt платформа недоступна / таймаут (AC-17)
+    DRP --> M : ошибка / нет ответа
+    M --> App : 503 PLATFORM_UNAVAILABLE, Retry-After\n/ 504 UPSTREAM_TIMEOUT
+  else данные получены (AC-16)
+    DRP --> M : статус, баланс
+    M --> App : 200 Cache-Control: no-store\nownerType, status ACTIVE, walletNumberMasked,\nbalance 0.00 RUB, openedAt
+  end
+end
+
+== Альтернативы на любом шаге до передачи CSR ==
+opt клиент отменяет заявку или отказывается от договора (A6, AC-12)
+  App -> M : POST /wallet-applications/{applicationId}/cancel\n(cancelWalletApplication)
+  alt чужая / несуществующая заявка (AC-18)
+    M --> App : 404 RESOURCE_NOT_FOUND
+  else заявка не в CREATED | ESIA_PENDING | CONTRACT_PENDING | KEYS_PENDING
+    M --> App : 409 INVALID_APPLICATION_STATE
+  else
+    M --> App : 200 [S] CANCELLED
+  end
+end
+opt прошло 24 ч, заявка в CREATED | ESIA_PENDING | CONTRACT_PENDING | KEYS_PENDING (A10, AC-19)
+  M -> M : [S] EXPIRED
+  note right of M : дальнейшие шаги по заявке —\n409 INVALID_APPLICATION_STATE
+end
+@enduml
