@@ -39,8 +39,8 @@ info:
     - A-01. ИП открывает кошелёк для предпринимательской деятельности в том же приложении (из Story).
     - A-02. CSR передаётся в формате PKCS#10 DER в base64; алгоритмы ключа — ГОСТ Р 34.10-2012 (256 / 512).
     - A-03. При принятии договора модуль сверяет версию с актуальной версией на платформе ЦР.
-    - A-04. При передаче CSR модуль синхронно получает сведения из АБС (для ИП) и передаёт запрос
-      на платформу; проверка антифрода и результат платформы обрабатываются асинхронно.
+    - A-04. При передаче CSR модуль синхронно получает сведения из АБС (для ИП), проверяет заявку
+      в антифроде и передаёт запрос на платформу; результат платформы обрабатывается асинхронно.
     - A-05. Формат маскированного номера кошелька — `**** XXXX` (последние 4 символа).
   x-jira-keys: [SCRUM-2194, SCRUM-2196]
 servers:
@@ -225,7 +225,7 @@ paths:
         - `ESIA_PENDING → CONTRACT_PENDING` — данные из Госуслуг получены, на платформе нет счёта выбранного типа;
         - `ESIA_PENDING → REJECTED` с `rejectReason` `ESIA_CONSENT_DENIED` / `ESIA_ACCOUNT_NOT_CONFIRMED` (AC-07)
           или `WALLET_ALREADY_EXISTS` — счёт этого типа открыт через другой банк (AC-08);
-        - `PROCESSING → ON_REVIEW` — антифрод требует дополнительной проверки (AC-14);
+        - `ON_REVIEW → PROCESSING` — дополнительная проверка пройдена, запрос передан на платформу ЦР;
         - `PROCESSING / ON_REVIEW → REJECTED` с `rejectReason` `OPERATION_DECLINED_BY_SECURITY`
           (общая причина без деталей проверки, AC-14), `CERTIFICATE_ISSUE_FAILED` или `WALLET_OPENING_REFUSED`;
         - `PROCESSING → COMPLETED` — кошелёк открыт, в заявке появляется `walletId` (AC-15);
@@ -553,13 +553,21 @@ paths:
 
         **Предусловие:** заявка в статусе `KEYS_PENDING`; иначе `409 INVALID_APPLICATION_STATE`.
 
-        **Что делает сервер:**
-        - синхронно: для кошелька ИП получает сведения об ИП из АБС (`CORE_BANKING`),
-          передаёт запрос на выпуск сертификата и открытие счёта на платформу ЦР (`DR_PLATFORM`),
-          переводит заявку в `PROCESSING` и возвращает `202` со ссылкой на заявку;
-        - асинхронно: проверка антифрода (`ANTIFRAUD`) и результат платформы. Итог — `COMPLETED`
-          с `walletId`, `ON_REVIEW` или `REJECTED` (AC-14, AC-15); клиент узнаёт его опросом
-          `getWalletApplication` с интервалом 2 с.
+        **Что делает сервер синхронно, до ответа `202`:**
+        1. для кошелька ИП получает сведения об ИП из АБС (`CORE_BANKING`);
+        2. проверяет заявку в антифроде (`ANTIFRAUD`, таймаут 500 мс; при таймауте или недоступности
+           результат считается `REVIEW`);
+        3. при `ALLOW` передаёт на платформу ЦР (`DR_PLATFORM`) запрос на выпуск сертификата
+           и открытие счёта (с подтверждением приёма).
+
+        Ответ `202` содержит заявку в статусе по результату антифрода (AC-13, AC-14):
+        `PROCESSING` — `ALLOW`, запрос передан на платформу; `ON_REVIEW` — `REVIEW`;
+        `REJECTED` с `rejectReason: OPERATION_DECLINED_BY_SECURITY` — `DENY`, без деталей проверки.
+
+        **Асинхронно:** результат платформы — `COMPLETED` с `walletId` или `REJECTED`
+        (`CERTIFICATE_ISSUE_FAILED` / `WALLET_OPENING_REFUSED`) (AC-15); из `ON_REVIEW` после
+        ручной проверки — `PROCESSING` или `REJECTED`. Клиент узнаёт итог опросом
+        `getWalletApplication` с интервалом 2 с.
 
         После передачи CSR отменить заявку нельзя.
 
@@ -571,7 +579,7 @@ paths:
       x-acceptance-criteria: [AC-13, AC-14, AC-15, AC-17, AC-18]
       x-business-rules: [BR-GEN-01, BR-GEN-02, BR-DR-OPEN-10, BR-DR-OPEN-15, BR-AF-01, BR-AF-02, BR-AF-03, BR-AML-01, BR-IDM-01, BR-IDM-02, BR-TIME-03]
       x-external-systems: [CORE_BANKING, DR_PLATFORM, ANTIFRAUD]
-      x-assumption: Сведения из АБС и передача запроса на платформу выполняются синхронно до ответа 202 (так требуют E1 и AC-17); проверка антифрода и результат платформы — асинхронно (AC-14 описывает решение антифрода для заявки в PROCESSING).
+      x-assumption: Сведения из АБС, проверка антифрода и передача запроса на платформу выполняются синхронно до ответа 202 (Task — антифрод синхронно, платформа на шаге 10 асинхронно; integrations.md — последовательность АФ → платформа → 202; E1 и AC-17 — ошибка недоступности возвращается клиенту). Результат платформы — асинхронно.
       parameters:
         - $ref: '#/components/parameters/XRequestId'
         - $ref: '#/components/parameters/ApplicationId'
@@ -590,7 +598,9 @@ paths:
                   keyAlgorithm: GOST_R_34_10_2012_256
       responses:
         '202':
-          description: Запрос принят к асинхронной обработке, заявка в статусе `PROCESSING`.
+          description: |
+            Запрос принят. Заявка в статусе `PROCESSING` (антифрод `ALLOW`), `ON_REVIEW` (`REVIEW`)
+            или `REJECTED` с `rejectReason: OPERATION_DECLINED_BY_SECURITY` (`DENY`).
           headers:
             Location:
               $ref: '#/components/headers/Location'
@@ -607,6 +617,29 @@ paths:
                     id: 3f6c1e2a-7b4d-4c1e-9a2b-1d2e3f4a5b6c
                     ownerType: INDIVIDUAL
                     status: PROCESSING
+                    acceptedContractVersion: '2026.09.01'
+                    contractAcceptedAt: '2026-11-19T14:25:10+03:00'
+                    expiresAt: '2026-11-20T14:21:00+03:00'
+                    createdAt: '2026-11-19T14:21:00+03:00'
+                    updatedAt: '2026-11-19T14:26:02+03:00'
+                onReview:
+                  summary: Антифрод требует дополнительной проверки
+                  value:
+                    id: 3f6c1e2a-7b4d-4c1e-9a2b-1d2e3f4a5b6c
+                    ownerType: INDIVIDUAL
+                    status: ON_REVIEW
+                    acceptedContractVersion: '2026.09.01'
+                    contractAcceptedAt: '2026-11-19T14:25:10+03:00'
+                    expiresAt: '2026-11-20T14:21:00+03:00'
+                    createdAt: '2026-11-19T14:21:00+03:00'
+                    updatedAt: '2026-11-19T14:26:02+03:00'
+                rejectedSecurity:
+                  summary: Отказ по результатам проверки безопасности
+                  value:
+                    id: 3f6c1e2a-7b4d-4c1e-9a2b-1d2e3f4a5b6c
+                    ownerType: INDIVIDUAL
+                    status: REJECTED
+                    rejectReason: OPERATION_DECLINED_BY_SECURITY
                     acceptedContractVersion: '2026.09.01'
                     contractAcceptedAt: '2026-11-19T14:25:10+03:00'
                     expiresAt: '2026-11-20T14:21:00+03:00'
