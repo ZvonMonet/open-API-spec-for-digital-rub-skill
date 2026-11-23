@@ -21,7 +21,15 @@
 
 | ID | Задача | Суть | Правка SKILL.md |
 |---|---|---|---|
+| ERR-01 | SCRUM-2194 / SCRUM-2196 | Переходы статуса (`POST …/contract-acceptance`, `POST …/cancel`) без `Idempotency-Key` | Да |
 
 ## Записи
 
-_Пока нет — заполняется после первого прогона skill._
+### ERR-01. Переходы статуса без Idempotency-Key
+- **Дата:** 2026-11-23
+- **Задача:** SCRUM-2194 / SCRUM-2196, PR #3 (`oas/SCRUM-2194-wallet-opening-sequence`)
+- **Что сделал агент:** в `artifacts/koshelek-cr-wallet-opening-api.yaml` операции `acceptWalletApplicationContract` (`POST /wallet-applications/{applicationId}/contract-acceptance`) и `cancelWalletApplication` (`POST /wallet-applications/{applicationId}/cancel`) описаны без заголовка `Idempotency-Key`; у остальных `POST` ключ есть.
+- **Почему это ошибка:** сервер может успеть перевести заявку в `KEYS_PENDING` (или `CANCELLED`), а клиент — получить `504`. Повтор без ключа вернёт `409 INVALID_APPLICATION_STATE`, и приложение не узнает, принят ли договор. Нарушена цель BR-IDM-01 и AC-17 («статус заявки не меняется / запрос можно повторить»).
+- **Как исправлено в артефакте:** —, исправление артефакта — отдельным коммитом `fix(human)` или повторным прогоном skill.
+- **Причина:** правило в SKILL.md (шаг 5) и в `oas-conventions.md` (OAS-HDR-03) требовало ключ только для `POST`, «создающих ресурс или двигающих деньги». Переходы статуса под формулировку не попадали, и линтер этого не проверял.
+- **Изменение skill:** SKILL.md шаг 5 — ключ у **каждого** `POST` с объяснением причины; новый пункт чек-листа; OAS-HDR-03, BR-IDM-01, NFR-AV-04 расширены; добавлено правило Spectral `post-idempotency-key` (на артефакте PR #3 даёт ровно 2 ошибки — на этих операциях). Коммит в PR `skill/answers-2026-11-23`.

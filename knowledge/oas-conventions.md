@@ -94,7 +94,7 @@ tags: [oas, conventions, spectral]
 |---|---|---|---|
 | OAS-HDR-01 | `Authorization` | Все запросы | Через `securitySchemes`, не как параметр. |
 | OAS-HDR-02 | `X-Request-Id` | Все запросы и ответы | UUID, необязателен в запросе; сервер возвращает его (или сгенерированный) в ответе. Компонент `components.parameters.XRequestId`. |
-| OAS-HDR-03 | `Idempotency-Key` | `POST`, создающие ресурс или двигающие деньги | UUID, **обязателен**. Компонент `components.parameters.IdempotencyKey`. |
+| OAS-HDR-03 | `Idempotency-Key` | **Каждый** `POST`: создание ресурса, переход статуса (принятие, отмена, подтверждение), денежная операция | UUID, **обязателен**. Компонент `components.parameters.IdempotencyKey`. В `description` параметра: повтор возвращает исходный итоговый ответ; ответы 5xx не сохраняются (BR-IDM-03). **[lint]** |
 | OAS-HDR-04 | `Location` | Ответы 201 и 202 | URL созданного ресурса или ресурса статуса. |
 | OAS-HDR-05 | `Retry-After` | Ответы 429 и 503 | Секунды. |
 | OAS-HDR-06 | `Cache-Control: no-store` | Ответы с данными C2/C3 | Компонент `components.headers.CacheControlNoStore`. |
