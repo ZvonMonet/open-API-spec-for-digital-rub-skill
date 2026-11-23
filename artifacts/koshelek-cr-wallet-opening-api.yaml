@@ -4,44 +4,47 @@ info:
   version: 1.0.0
   description: |
     Клиентский API модуля КошелёкЦР для открытия кошелька (счёта) цифрового рубля
-    в мобильном приложении банка.
+    на платформе Банка России из мобильного приложения банка.
 
-    **Потребитель:** мобильное приложение банка (через API Gateway банка).
+    **Потребитель:** мобильное приложение банка (через API Gateway банка, NFR-SEC-01).
     **Провайдер:** модуль КошелёкЦР.
 
-    **Объём:** открытие личного кошелька физического лица (`INDIVIDUAL`) и кошелька ИП
-    для предпринимательской деятельности (`SOLE_PROPRIETOR`); получение и принятие договора;
+    **Объём (SCRUM-2194, SCRUM-2196):** открытие личного кошелька физического лица
+    (`ownerType = INDIVIDUAL`) и кошелька ИП для предпринимательской деятельности
+    (`ownerType = SOLE_PROPRIETOR`); получение и принятие договора счёта цифрового рубля;
     передача запроса на сертификат ключа проверки ЭП; отслеживание статуса заявки;
     получение данных открытого кошелька.
 
     **Не входит:** пополнение, вывод, переводы, закрытие кошелька; API бэк-офиса;
-    служебный endpoint обработки обратного вызова ЕСИА (не часть клиентского API).
-    Пароль к кошельку создаётся и хранится на устройстве и в API не передаётся.
-    Закрытый ключ ЭП не покидает устройство, в API передаётся только CSR.
+    служебный endpoint обработки результата авторизации ЕСИА на сервере банка.
 
-    **Внешние системы** (вызывает модуль, клиенту не видны): АБС (`CORE_BANKING`),
-    Госуслуги (`ESIA`), платформа цифрового рубля Банка России (`DR_PLATFORM`),
-    антифрод банка (`ANTIFRAUD`). Взаимодействие с платформой ЦР — по требованиям
-    Банка России к участникам платформы (защищённый канал, СКЗИ); в клиентском API не описывается.
+    **Внешние системы** (вызывает модуль, в клиентском API не описываются как операции):
+    АБС (`CORE_BANKING`), Госуслуги / ЕСИА (`ESIA`), платформа цифрового рубля
+    Банка России (`DR_PLATFORM`), антифрод банка (`ANTIFRAUD`). Взаимодействие с платформой —
+    по требованиям Банка России к участникам платформы: защищённый канал, СКЗИ, ГОСТ
+    (NFR-SEC-03, SD-API-14). Вызовы внешних систем повторяются модулем по политике `RP-EXP`
+    (экспоненциальная задержка с полным джиттером, 3 попытки; NFR-AV-05); после исчерпания
+    повторов клиент получает `503` / `504`, статус заявки не меняется (NFR-AV-02, BR-TIME-03).
 
-    **Общее поведение:**
-    - клиент определяется по токену доступа; чужая или несуществующая заявка — `404`;
-    - синхронные операции — не дольше 2 с (p95);
-    - шаг передачи CSR асинхронный (`202`), результат — опросом статуса заявки
-      с интервалом 2 с, не дольше 60 с на клиенте;
-    - незавершённая заявка истекает через 24 часа (`EXPIRED`);
-    - при недоступности внешней системы возвращается `503` / `504`, статус заявки не меняется;
-      запрос можно повторить (для операций с `Idempotency-Key` — с тем же ключом).
+    **Общее:** синхронные операции — не дольше 2 с (p95, NFR-PERF-01), кроме
+    `startEsiaAuthorization` (до 64 с, таймаут клиента 70 с, NFR-PERF-05). Каждый `POST`
+    передаётся с обязательным `Idempotency-Key` (BR-IDM-01, NFR-AV-04). Пароль к кошельку
+    и закрытый ключ ЭП остаются на устройстве и в API не передаются (BR-DR-OPEN-10, 11).
 
-    **Задачи:** SCRUM-2194 (Task), SCRUM-2196 (Story).
-
-    **Допущения** (подробно — в отчёте `koshelek-cr-wallet-opening-api-check.md`):
-    - A-01. ИП открывает кошелёк для предпринимательской деятельности в том же приложении (из Story).
-    - A-02. CSR передаётся в формате PKCS#10 DER в base64; алгоритмы ключа — ГОСТ Р 34.10-2012 (256 / 512).
-    - A-03. При принятии договора модуль сверяет версию с актуальной версией на платформе ЦР.
-    - A-04. При передаче CSR модуль синхронно получает сведения из АБС (для ИП), проверяет заявку
-      в антифроде и передаёт запрос на платформу; результат платформы обрабатывается асинхронно.
-    - A-05. Формат маскированного номера кошелька — `**** XXXX` (последние 4 символа).
+    **Допущения** (подробно — в `koshelek-cr-wallet-opening-api-check.md`, раздел 7):
+    - A-01. Актуальность версии договора при принятии проверяется по версии, известной модулю
+      (полученной от платформы через INT-DRP-02), без отдельного вызова платформы.
+    - A-02. Сведения об ИП для шага 10 модуль читает из АБС (INT-ABS-01) синхронно в запросе
+      `submitCertificateRequest`.
+    - A-03. Решение антифрода получается синхронно в запросе `submitCertificateRequest`;
+      ответ `202` содержит заявку в статусе `PROCESSING`, `ON_REVIEW` или `REJECTED`.
+    - A-04. Если приём запроса на открытие счёта (INT-DRP-03) не подтверждён, модуль уточняет
+      статус (INT-DRP-08) и при неполучении платформой отправляет запрос повторно один раз
+      с тем же идентификатором операции.
+    - A-05. Формат номера кошелька и перечень алгоритмов ключа не заданы; поля описаны без
+      строгого формата.
+    - A-06. Условия перехода `PROCESSING` → `FAILED` в источниках не заданы; статус оставлен
+      в `enum` по статусной модели §8.1, поле `errorCode` не добавлено.
   x-jira-keys: [SCRUM-2194, SCRUM-2196]
 servers:
   - url: https://api.bank.example/koshelek-cr/v1
@@ -55,40 +58,38 @@ paths:
   /wallet-applications:
     post:
       operationId: createWalletApplication
-      summary: Создать заявку на открытие кошелька
+      summary: Создать заявку на открытие кошелька цифрового рубля
       description: |
-        Создаёт заявку на открытие кошелька выбранного типа (шаг 2 сценария SCRUM-2194).
+        Шаг 2 сценария SCRUM-2194. Клиент определяется по токену (BR-GEN-01).
 
-        **Предусловия:** клиент аутентифицирован, идентифицирован в банке и не заблокирован.
+        **Что делает сервер (синхронно):**
+        1. Получает профиль клиента из АБС — INT-ABS-01 (таймаут попытки 1 с, повтор `RP-EXP`):
+           уровень идентификации, признак блокировки, дата рождения, гражданство, признак ИП.
+        2. Проверяет: клиент идентифицирован и не заблокирован (BR-GEN-03, BR-GEN-04);
+           совершеннолетний гражданин РФ (BR-DR-OPEN-01); для `SOLE_PROPRIETOR` — клиент
+           зарегистрирован в банке как ИП (BR-DR-OPEN-15).
+        3. Проверяет, что у клиента нет кошелька выбранного типа, открытого через наш банк
+           (BR-DR-OPEN-04, BR-DR-OPEN-05). Кошелёк другого типа открытию не мешает (AC-01a).
+        4. Проверяет, что нет незавершённой заявки того же `ownerType` (§8.1).
+        5. Создаёт заявку в статусе `CREATED` со сроком действия 24 часа (NFR-RET-01).
 
-        **Что делает сервер** (синхронно, по данным АБС — `CORE_BANKING`):
-        - проверяет совершеннолетие и гражданство РФ (BR-DR-OPEN-01) → `422 CLIENT_NOT_ELIGIBLE`
-          с `reason` `AGE` / `CITIZENSHIP` (AC-02);
-        - для `SOLE_PROPRIETOR` проверяет, что клиент зарегистрирован в банке как ИП
-          (BR-DR-OPEN-15) → `422 CLIENT_NOT_ELIGIBLE` с `reason: NOT_SOLE_PROPRIETOR` (AC-01b);
-        - проверяет, что у клиента нет кошелька этого типа, открытого через банк
-          (BR-DR-OPEN-04, 05) → `409 WALLET_ALREADY_EXISTS` с типом открытого кошелька (AC-03).
-          Кошелёк другого типа открытию не мешает (AC-01a);
-        - проверяет, что нет незавершённой заявки того же типа → `409 APPLICATION_IN_PROGRESS`
-          с идентификатором существующей заявки (AC-04).
+        **Ответы бизнес-проверок:**
+        - `403` — `IDENTIFICATION_REQUIRED`, `CLIENT_BLOCKED`;
+        - `409` — `WALLET_ALREADY_EXISTS` (с типом открытого кошелька, AC-03),
+          `APPLICATION_IN_PROGRESS` (с идентификатором существующей заявки, AC-04);
+        - `422` — `CLIENT_NOT_ELIGIBLE` (с причиной, AC-01b, AC-02), `IDEMPOTENCY_KEY_REUSED`.
 
-        Наличие счёта, открытого через другой банк, проверяется позже, после авторизации
-        в Госуслугах (см. `getWalletApplication`, AC-08).
-
-        **Результат:** заявка в статусе `CREATED` со сроком действия 24 часа (AC-01, AC-01a).
-
-        **Идемпотентность:** повтор с тем же `Idempotency-Key` и тем же телом в течение 24 часов
-        возвращает ту же заявку (AC-05); с тем же ключом и другим телом — `422 IDEMPOTENCY_KEY_REUSED`.
-
-        **Лимит частоты:** не более 5 заявок в час на клиента → `429`.
+        Повтор с тем же `Idempotency-Key` и тем же телом возвращает ту же заявку, новая
+        не создаётся (AC-05, BR-IDM-01). Не более 5 заявок в час на клиента (NFR-RATE-01).
+        Критерии приёмки: AC-01, AC-01a, AC-01b, AC-02, AC-03, AC-04, AC-05.
       tags: [Wallet Opening]
       x-jira-key: SCRUM-2194
-      x-acceptance-criteria: [AC-01, AC-01a, AC-01b, AC-02, AC-03, AC-04, AC-05, AC-17]
-      x-business-rules: [BR-GEN-01, BR-GEN-03, BR-GEN-04, BR-DR-OPEN-01, BR-DR-OPEN-04, BR-DR-OPEN-05, BR-DR-OPEN-13, BR-DR-OPEN-15, BR-IDM-01, BR-IDM-02, BR-TIME-02]
+      x-acceptance-criteria: [AC-01, AC-01a, AC-01b, AC-02, AC-03, AC-04, AC-05]
+      x-business-rules: [BR-GEN-01, BR-GEN-03, BR-GEN-04, BR-DR-OPEN-01, BR-DR-OPEN-04, BR-DR-OPEN-05, BR-DR-OPEN-13, BR-DR-OPEN-15, BR-IDM-01, BR-IDM-02, BR-IDM-03, BR-TIME-02]
       x-external-systems: [CORE_BANKING]
       parameters:
-        - $ref: '#/components/parameters/XRequestId'
         - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/XRequestId'
       requestBody:
         required: true
         content:
@@ -97,16 +98,18 @@ paths:
               $ref: '#/components/schemas/CreateWalletApplicationRequest'
             examples:
               individual:
-                summary: Личный кошелёк физического лица
+                summary: Личный кошелёк физического лица (AC-01)
                 value:
                   ownerType: INDIVIDUAL
               soleProprietor:
-                summary: Кошелёк ИП для предпринимательской деятельности
+                summary: Кошелёк ИП для предпринимательской деятельности (AC-01a)
                 value:
                   ownerType: SOLE_PROPRIETOR
       responses:
         '201':
-          description: Заявка создана (или возвращена ранее созданная по тому же ключу идемпотентности).
+          description: |
+            Заявка создана в статусе `CREATED` (AC-01, AC-01a). Повтор с тем же
+            `Idempotency-Key` возвращает этот же ответ (AC-05).
           headers:
             Location:
               $ref: '#/components/headers/Location'
@@ -117,137 +120,178 @@ paths:
               schema:
                 $ref: '#/components/schemas/WalletApplication'
               examples:
-                created:
+                individualCreated:
                   summary: Заявка на личный кошелёк создана
                   value:
-                    id: 3f6c1e2a-7b4d-4c1e-9a2b-1d2e3f4a5b6c
+                    applicationId: 3f6c1e2a-8b4d-4c21-9a7e-1d2f3a4b5c60
                     ownerType: INDIVIDUAL
                     status: CREATED
-                    expiresAt: '2026-11-20T14:21:00+03:00'
-                    createdAt: '2026-11-19T14:21:00+03:00'
-                    updatedAt: '2026-11-19T14:21:00+03:00'
+                    expiresAt: '2026-11-24T10:00:00+03:00'
+                    createdAt: '2026-11-23T10:00:00+03:00'
+                    updatedAt: '2026-11-23T10:00:00+03:00'
+                soleProprietorCreated:
+                  summary: Заявка на кошелёк ИП создана
+                  value:
+                    applicationId: 7a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d
+                    ownerType: SOLE_PROPRIETOR
+                    status: CREATED
+                    expiresAt: '2026-11-24T10:05:00+03:00'
+                    createdAt: '2026-11-23T10:05:00+03:00'
+                    updatedAt: '2026-11-23T10:05:00+03:00'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
-          $ref: '#/components/responses/Forbidden'
-        '409':
           description: |
-            Конфликт состояния. Возможные `code`:
-            - `WALLET_ALREADY_EXISTS` — у клиента уже открыт через банк кошелёк этого типа; в `ownerType` — тип открытого кошелька (AC-03);
-            - `APPLICATION_IN_PROGRESS` — есть незавершённая заявка того же типа; в `applicationId` — её идентификатор (AC-04).
-          headers:
-            X-Request-Id:
-              $ref: '#/components/headers/XRequestId'
+            Клиент не может открыть кошелёк по данным банка: `IDENTIFICATION_REQUIRED`
+            (BR-GEN-03), `CLIENT_BLOCKED` (BR-GEN-04).
           content:
             application/problem+json:
               schema:
-                oneOf:
-                  - $ref: '#/components/schemas/WalletAlreadyExistsProblem'
-                  - $ref: '#/components/schemas/ApplicationInProgressProblem'
+                $ref: '#/components/schemas/Problem'
+              examples:
+                clientBlocked:
+                  value:
+                    type: https://api.bank.example/problems/client-blocked
+                    title: Client blocked
+                    status: 403
+                    code: CLIENT_BLOCKED
+                    traceId: 0af7651916cd43dd8448eb211c80319c
+                identificationRequired:
+                  value:
+                    type: https://api.bank.example/problems/identification-required
+                    title: Identification required
+                    status: 403
+                    code: IDENTIFICATION_REQUIRED
+                    traceId: 0af7651916cd43dd8448eb211c80319d
+        '409':
+          description: |
+            Конфликт с существующими ресурсами клиента:
+            - `WALLET_ALREADY_EXISTS` — кошелёк выбранного типа уже открыт через наш банк;
+              в `ownerType` — тип открытого кошелька (AC-03, BR-DR-OPEN-04, BR-DR-OPEN-05);
+            - `APPLICATION_IN_PROGRESS` — есть незавершённая заявка того же типа;
+              в `applicationId` — её идентификатор (AC-04, §8.1).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/WalletApplicationProblem'
               examples:
                 walletAlreadyExists:
-                  summary: Кошелёк этого типа уже открыт через банк
+                  summary: Кошелёк этого типа уже открыт (AC-03)
                   value:
                     type: https://api.bank.example/problems/wallet-already-exists
-                    title: Кошелёк уже открыт
+                    title: Wallet already exists
                     status: 409
                     code: WALLET_ALREADY_EXISTS
                     ownerType: INDIVIDUAL
-                    traceId: 0af7651916cd43dd8448eb211c80319c
+                    traceId: 0af7651916cd43dd8448eb211c80319e
                 applicationInProgress:
-                  summary: Есть незавершённая заявка того же типа
+                  summary: Есть незавершённая заявка того же типа (AC-04)
                   value:
                     type: https://api.bank.example/problems/application-in-progress
-                    title: Заявка уже в работе
+                    title: Application in progress
                     status: 409
                     code: APPLICATION_IN_PROGRESS
-                    applicationId: 9b1d2c3e-4f5a-4b6c-8d7e-0f1a2b3c4d5e
-                    traceId: 0af7651916cd43dd8448eb211c80319c
+                    applicationId: 3f6c1e2a-8b4d-4c21-9a7e-1d2f3a4b5c60
+                    traceId: 0af7651916cd43dd8448eb211c80319f
         '422':
           description: |
-            Нарушено бизнес-правило. Возможные `code`:
-            - `CLIENT_NOT_ELIGIBLE` — клиент не соответствует требованиям; в `reason` — `AGE`, `CITIZENSHIP` или `NOT_SOLE_PROPRIETOR` (AC-01b, AC-02);
-            - `IDEMPOTENCY_KEY_REUSED` — повтор с тем же ключом идемпотентности, но с другим телом.
-          headers:
-            X-Request-Id:
-              $ref: '#/components/headers/XRequestId'
+            Нарушено бизнес-правило:
+            - `CLIENT_NOT_ELIGIBLE` — клиент не соответствует требованиям; в `reason` —
+              `AGE`, `CITIZENSHIP` (AC-02, BR-DR-OPEN-01) или `NOT_SOLE_PROPRIETOR`
+              (AC-01b, BR-DR-OPEN-15);
+            - `IDEMPOTENCY_KEY_REUSED` — ключ уже использован с другим телом (BR-IDM-02).
           content:
             application/problem+json:
               schema:
-                anyOf:
-                  - $ref: '#/components/schemas/ClientNotEligibleProblem'
-                  - $ref: '#/components/schemas/Problem'
+                $ref: '#/components/schemas/WalletApplicationProblem'
               examples:
                 notSoleProprietor:
-                  summary: Запрошен кошелёк ИП, клиент не является ИП
+                  summary: Запрошен кошелёк ИП, клиент не ИП (AC-01b)
                   value:
                     type: https://api.bank.example/problems/client-not-eligible
-                    title: Клиент не соответствует требованиям
+                    title: Client not eligible
                     status: 422
                     code: CLIENT_NOT_ELIGIBLE
                     reason: NOT_SOLE_PROPRIETOR
-                    traceId: 0af7651916cd43dd8448eb211c80319c
+                    traceId: 0af7651916cd43dd8448eb211c8031a0
                 underage:
-                  summary: Клиент младше 18 лет
+                  summary: Клиент младше 18 лет (AC-02)
                   value:
                     type: https://api.bank.example/problems/client-not-eligible
-                    title: Клиент не соответствует требованиям
+                    title: Client not eligible
                     status: 422
                     code: CLIENT_NOT_ELIGIBLE
                     reason: AGE
-                    traceId: 0af7651916cd43dd8448eb211c80319c
+                    traceId: 0af7651916cd43dd8448eb211c8031a1
                 idempotencyKeyReused:
-                  summary: Ключ идемпотентности использован с другим телом
-                  value:
-                    type: https://api.bank.example/problems/idempotency-key-reused
-                    title: Ключ идемпотентности уже использован
-                    status: 422
-                    code: IDEMPOTENCY_KEY_REUSED
-                    traceId: 0af7651916cd43dd8448eb211c80319c
+                  $ref: '#/components/examples/IdempotencyKeyReused'
         '429':
           $ref: '#/components/responses/TooManyRequests'
         '500':
           $ref: '#/components/responses/InternalServerError'
         '503':
-          $ref: '#/components/responses/ServiceUnavailable'
+          description: |
+            АБС недоступна, повторы `RP-EXP` исчерпаны — `CORE_BANKING_UNAVAILABLE`.
+            Заявка не создаётся; запрос можно повторить с тем же `Idempotency-Key` (BR-IDM-03).
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+              example:
+                type: https://api.bank.example/problems/core-banking-unavailable
+                title: Core banking unavailable
+                status: 503
+                code: CORE_BANKING_UNAVAILABLE
+                traceId: 0af7651916cd43dd8448eb211c8031a2
         '504':
           $ref: '#/components/responses/GatewayTimeout'
 
   /wallet-applications/{applicationId}:
     get:
       operationId: getWalletApplication
-      summary: Получить заявку на открытие кошелька
+      summary: Получить заявку на открытие кошелька и её статус
       description: |
-        Возвращает текущее состояние заявки. Используется для опроса статуса (шаг 11 сценария)
-        и для отслеживания переходов, которые сервер выполняет без вызова клиента:
-        - `ESIA_PENDING → CONTRACT_PENDING` — данные из Госуслуг получены, на платформе нет счёта выбранного типа;
-        - `ESIA_PENDING → REJECTED` с `rejectReason` `ESIA_CONSENT_DENIED` / `ESIA_ACCOUNT_NOT_CONFIRMED` (AC-07)
-          или `WALLET_ALREADY_EXISTS` — счёт этого типа открыт через другой банк (AC-08);
-        - `ON_REVIEW → PROCESSING` — дополнительная проверка пройдена, запрос передан на платформу ЦР;
-        - `PROCESSING / ON_REVIEW → REJECTED` с `rejectReason` `OPERATION_DECLINED_BY_SECURITY`
-          (общая причина без деталей проверки, AC-14), `CERTIFICATE_ISSUE_FAILED` или `WALLET_OPENING_REFUSED`;
-        - `PROCESSING → COMPLETED` — кошелёк открыт, в заявке появляется `walletId` (AC-15);
-        - `PROCESSING → FAILED` — техническая ошибка без возможности повтора;
-        - нефинальная заявка до `PROCESSING` → `EXPIRED` по истечении `expiresAt` (24 часа, AC-19).
+        Шаг 11 сценария SCRUM-2194: приложение опрашивает статус заявки до `COMPLETED`;
+        после открытия в заявке появляется `walletId` (AC-15, FR-OPEN-10).
 
-        Финальные статусы: `COMPLETED`, `REJECTED`, `CANCELLED`, `EXPIRED`, `FAILED`.
+        **Опрос:** рекомендуемый интервал — 2 с, максимальное время ожидания на клиенте — 60 с,
+        после чего приложение показывает «заявка в обработке» (NFR-PERF-03). Не чаще 1 раза
+        в секунду на заявку, иначе `429` (NFR-RATE-03).
 
-        **Опрос:** рекомендуемый интервал — 2 с; не чаще 1 раза в секунду (иначе `429`);
-        если за 60 с статус не стал финальным, приложение показывает «заявка в обработке».
+        **Переходы, которые сервер выполняет без вызова клиента** (статусная модель §8.1):
+        - `ESIA_PENDING` → `CONTRACT_PENDING` — данные ЕСИА получены, на платформе нет счёта
+          выбранного типа (шаги 4–5, INT-ESIA-02, INT-DRP-01);
+        - `ESIA_PENDING` → `REJECTED` — `rejectReason`: `ESIA_CONSENT_DENIED`,
+          `ESIA_ACCOUNT_NOT_CONFIRMED` (AC-07) или `WALLET_ALREADY_EXISTS` — счёт открыт через
+          другой банк (AC-08);
+        - `PROCESSING` → `ON_REVIEW` — антифрод требует дополнительной проверки (AC-14);
+        - `ON_REVIEW` → `PROCESSING` / `REJECTED` (`OPERATION_DECLINED_BY_SECURITY`) — решение
+          по дополнительной проверке (INT-AF-03);
+        - `PROCESSING` → `COMPLETED` — платформа открыла счёт, в заявке `walletId` (AC-15);
+        - `PROCESSING` → `REJECTED` — `CERTIFICATE_ISSUE_FAILED`, `WALLET_OPENING_REFUSED`
+          (A9, BR-DR-OPEN-14, BR-AML-01) или `OPERATION_DECLINED_BY_SECURITY` (AC-14);
+          детали проверок не раскрываются (BR-AF-03);
+        - `PROCESSING` → `FAILED` — техническая ошибка без возможности повтора (§8.1);
+        - `CREATED`, `ESIA_PENDING`, `CONTRACT_PENDING`, `KEYS_PENDING` → `EXPIRED` — заявка не
+          завершена за 24 часа; дальнейшие шаги по ней невозможны (AC-19, NFR-RET-01).
 
-        Заявка другого клиента или несуществующая — `404` (AC-18). Внешние системы не вызываются.
+        Чужая или несуществующая заявка — `404` (AC-18, BR-GEN-02). Внешние системы не вызываются.
+        Критерии приёмки: AC-07, AC-08, AC-14, AC-15, AC-18, AC-19.
       tags: [Wallet Opening]
       x-jira-key: SCRUM-2194
       x-acceptance-criteria: [AC-07, AC-08, AC-14, AC-15, AC-18, AC-19]
-      x-business-rules: [BR-GEN-01, BR-GEN-02, BR-AF-02, BR-AF-03, BR-AML-01, BR-DR-OPEN-02, BR-DR-OPEN-04, BR-DR-OPEN-05, BR-DR-OPEN-10, BR-DR-OPEN-14, BR-TIME-02]
+      x-business-rules: [BR-GEN-01, BR-GEN-02, BR-AF-02, BR-AF-03, BR-TIME-02, BR-DR-OPEN-14, BR-AML-01]
       parameters:
-        - $ref: '#/components/parameters/XRequestId'
         - $ref: '#/components/parameters/ApplicationId'
+        - $ref: '#/components/parameters/XRequestId'
       responses:
         '200':
-          description: Заявка.
+          description: Заявка с текущим статусом.
           headers:
             X-Request-Id:
               $ref: '#/components/headers/XRequestId'
@@ -256,40 +300,54 @@ paths:
               schema:
                 $ref: '#/components/schemas/WalletApplication'
               examples:
-                completed:
-                  summary: Кошелёк открыт
+                processing:
+                  summary: Идёт открытие счёта на платформе
                   value:
-                    id: 3f6c1e2a-7b4d-4c1e-9a2b-1d2e3f4a5b6c
+                    applicationId: 3f6c1e2a-8b4d-4c21-9a7e-1d2f3a4b5c60
+                    ownerType: INDIVIDUAL
+                    status: PROCESSING
+                    expiresAt: '2026-11-24T10:00:00+03:00'
+                    createdAt: '2026-11-23T10:00:00+03:00'
+                    updatedAt: '2026-11-23T10:12:00+03:00'
+                completed:
+                  summary: Кошелёк открыт (AC-15)
+                  value:
+                    applicationId: 3f6c1e2a-8b4d-4c21-9a7e-1d2f3a4b5c60
                     ownerType: INDIVIDUAL
                     status: COMPLETED
-                    walletId: 6a7b8c9d-0e1f-4a2b-9c3d-4e5f6a7b8c9d
-                    acceptedContractVersion: '2026.09.01'
-                    contractAcceptedAt: '2026-11-19T14:25:10+03:00'
-                    expiresAt: '2026-11-20T14:21:00+03:00'
-                    createdAt: '2026-11-19T14:21:00+03:00'
-                    updatedAt: '2026-11-19T14:27:42+03:00'
+                    walletId: 9c8b7a6d-5e4f-4321-8765-0fedcba98765
+                    expiresAt: '2026-11-24T10:00:00+03:00'
+                    createdAt: '2026-11-23T10:00:00+03:00'
+                    updatedAt: '2026-11-23T10:12:20+03:00'
                 rejectedEsia:
-                  summary: Клиент отказал в согласии на Госуслугах
+                  summary: Отказ в согласии на Госуслугах (AC-07)
                   value:
-                    id: 3f6c1e2a-7b4d-4c1e-9a2b-1d2e3f4a5b6c
+                    applicationId: 3f6c1e2a-8b4d-4c21-9a7e-1d2f3a4b5c60
                     ownerType: INDIVIDUAL
                     status: REJECTED
                     rejectReason: ESIA_CONSENT_DENIED
-                    expiresAt: '2026-11-20T14:21:00+03:00'
-                    createdAt: '2026-11-19T14:21:00+03:00'
-                    updatedAt: '2026-11-19T14:23:05+03:00'
-                rejectedSecurity:
-                  summary: Отказ по результатам проверки безопасности
+                    expiresAt: '2026-11-24T10:00:00+03:00'
+                    createdAt: '2026-11-23T10:00:00+03:00'
+                    updatedAt: '2026-11-23T10:03:00+03:00'
+                rejectedOtherBank:
+                  summary: Счёт выбранного типа открыт через другой банк (AC-08)
                   value:
-                    id: 3f6c1e2a-7b4d-4c1e-9a2b-1d2e3f4a5b6c
-                    ownerType: SOLE_PROPRIETOR
+                    applicationId: 3f6c1e2a-8b4d-4c21-9a7e-1d2f3a4b5c60
+                    ownerType: INDIVIDUAL
                     status: REJECTED
-                    rejectReason: OPERATION_DECLINED_BY_SECURITY
-                    acceptedContractVersion: '2026.09.01'
-                    contractAcceptedAt: '2026-11-19T14:25:10+03:00'
-                    expiresAt: '2026-11-20T14:21:00+03:00'
-                    createdAt: '2026-11-19T14:21:00+03:00'
-                    updatedAt: '2026-11-19T14:26:30+03:00'
+                    rejectReason: WALLET_ALREADY_EXISTS
+                    expiresAt: '2026-11-24T10:00:00+03:00'
+                    createdAt: '2026-11-23T10:00:00+03:00'
+                    updatedAt: '2026-11-23T10:04:00+03:00'
+                expired:
+                  summary: Срок заявки истёк (AC-19)
+                  value:
+                    applicationId: 3f6c1e2a-8b4d-4c21-9a7e-1d2f3a4b5c60
+                    ownerType: SOLE_PROPRIETOR
+                    status: EXPIRED
+                    expiresAt: '2026-11-24T10:00:00+03:00'
+                    createdAt: '2026-11-23T10:00:00+03:00'
+                    updatedAt: '2026-11-24T10:00:00+03:00'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -303,33 +361,39 @@ paths:
 
   /wallet-applications/{applicationId}/esia-authorization:
     post:
-      operationId: createEsiaAuthorization
-      summary: Получить ссылку для авторизации в Госуслугах
+      operationId: startEsiaAuthorization
+      summary: Получить ссылку для авторизации клиента в Госуслугах
       description: |
-        Формирует запрос авторизации в Госуслугах (ЕСИА) и возвращает ссылку для перехода
-        клиента (шаг 3 сценария, AC-06).
+        Шаг 3 сценария SCRUM-2194. **Предусловие:** заявка в статусе `CREATED` или
+        `ESIA_PENDING` (повторный вызов в `ESIA_PENDING` возвращает новую ссылку — так клиент
+        заново начинает авторизацию после сбоя на шаге 4 или 5, E2).
 
-        **Предусловие:** заявка в статусе `CREATED`; иначе `409 INVALID_APPLICATION_STATE`.
+        **Что делает сервер (синхронно):** формирует запрос авторизации в ЕСИА — INT-ESIA-01
+        (таймаут попытки 20 с, повтор `RP-EXP`), возвращает ссылку для перехода клиента
+        в Госуслуги и переводит заявку в `ESIA_PENDING` (AC-06). Результат авторизации ЕСИА
+        передаёт на сервер банка (служебный endpoint, вне клиентского API); дальнейшие
+        переходы статуса видны в `getWalletApplication`.
 
-        **Что делает сервер:** синхронно обращается к ЕСИА (`ESIA`), переводит заявку
-        в `ESIA_PENDING`. Результат авторизации ЕСИА возвращает на сервер банка (служебный endpoint,
-        вне клиентского API); дальнейшие переходы клиент видит через `getWalletApplication`.
-        Код авторизации, токены и данные из ЕСИА клиенту не возвращаются.
+        **Время ответа:** до 64 с в худшем случае (3 попытки по 20 с и задержки); таймаут
+        API Gateway и клиента — 70 с (NFR-PERF-05).
 
-        **Недоступность ЕСИА:** `503 PLATFORM_UNAVAILABLE` / `504 UPSTREAM_TIMEOUT`,
-        заявка остаётся в `CREATED`; запрос можно повторить с тем же `Idempotency-Key` (AC-17).
+        **Ошибки:** `409 INVALID_APPLICATION_STATE` — заявка не в `CREATED` / `ESIA_PENDING`
+        (в т. ч. `EXPIRED`, AC-19); `422 IDEMPOTENCY_KEY_REUSED`; `503 ESIA_UNAVAILABLE` /
+        `504 UPSTREAM_TIMEOUT` — ЕСИА недоступна, повторы исчерпаны, статус не меняется,
+        запрос можно повторить с тем же `Idempotency-Key` (AC-17, E1).
+        Критерии приёмки: AC-06, AC-17, AC-18, AC-19.
       tags: [Wallet Opening]
       x-jira-key: SCRUM-2194
-      x-acceptance-criteria: [AC-06, AC-17, AC-18]
-      x-business-rules: [BR-GEN-01, BR-GEN-02, BR-DR-OPEN-02, BR-IDM-01, BR-IDM-02, BR-TIME-03]
+      x-acceptance-criteria: [AC-06, AC-17, AC-18, AC-19]
+      x-business-rules: [BR-GEN-02, BR-DR-OPEN-02, BR-IDM-01, BR-IDM-02, BR-IDM-03, BR-TIME-03]
       x-external-systems: [ESIA]
       parameters:
-        - $ref: '#/components/parameters/XRequestId'
         - $ref: '#/components/parameters/ApplicationId'
         - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/XRequestId'
       responses:
         '200':
-          description: Ссылка для авторизации сформирована, заявка в статусе `ESIA_PENDING`.
+          description: Ссылка для перехода в Госуслуги; заявка в статусе `ESIA_PENDING` (AC-06).
           headers:
             X-Request-Id:
               $ref: '#/components/headers/XRequestId'
@@ -337,13 +401,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/EsiaAuthorization'
-              examples:
-                esiaPending:
-                  summary: Ссылка на Госуслуги
-                  value:
-                    applicationId: 3f6c1e2a-7b4d-4c1e-9a2b-1d2e3f4a5b6c
-                    status: ESIA_PENDING
-                    authorizationUrl: https://esia.example/aas/oauth2/ac?client_id=BANK_EXAMPLE&state=5d1c2b3a-4e5f-4a6b-8c7d-9e0f1a2b3c4d
+              example:
+                applicationId: 3f6c1e2a-8b4d-4c21-9a7e-1d2f3a4b5c60
+                status: ESIA_PENDING
+                authorizationUrl: https://esia.gosuslugi.example/aas/oauth2/ac?state=3f6c1e2a-8b4d-4c21-9a7e-1d2f3a4b5c60
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -351,61 +412,58 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
-          description: |
-            Конфликт состояния. Возможные `code`:
-            - `INVALID_APPLICATION_STATE` — заявка не в статусе `CREATED` (в том числе в финальном статусе, AC-19).
-          headers:
-            X-Request-Id:
-              $ref: '#/components/headers/XRequestId'
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/Problem'
-              examples:
-                invalidState:
-                  summary: Заявка не в статусе CREATED
-                  value:
-                    type: https://api.bank.example/problems/invalid-application-state
-                    title: Недопустимое действие для текущего статуса заявки
-                    status: 409
-                    code: INVALID_APPLICATION_STATE
-                    traceId: 0af7651916cd43dd8448eb211c80319c
+          $ref: '#/components/responses/InvalidApplicationState'
         '422':
           $ref: '#/components/responses/IdempotencyKeyReused'
         '500':
           $ref: '#/components/responses/InternalServerError'
         '503':
-          $ref: '#/components/responses/ServiceUnavailable'
+          description: |
+            Госуслуги недоступны, повторы `RP-EXP` исчерпаны — `ESIA_UNAVAILABLE`.
+            Статус заявки не меняется; повторить позже с тем же `Idempotency-Key` (AC-17, E1).
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+              example:
+                type: https://api.bank.example/problems/esia-unavailable
+                title: ESIA unavailable
+                status: 503
+                code: ESIA_UNAVAILABLE
+                traceId: 0af7651916cd43dd8448eb211c8031a3
         '504':
           $ref: '#/components/responses/GatewayTimeout'
 
   /wallet-applications/{applicationId}/contract:
     get:
       operationId: getWalletApplicationContract
-      summary: Получить договор счёта цифрового рубля
+      summary: Получить актуальный договор счёта цифрового рубля
       description: |
-        Возвращает актуальную версию договора счёта цифрового рубля, ссылки на правила платформы
-        и тарифы (шаг 6 сценария, AC-09). Повторный вызов после `409 CONTRACT_VERSION_OUTDATED`
-        возвращает новую версию договора (A7).
+        Шаг 6 сценария SCRUM-2194. **Предусловие:** заявка в статусе `CONTRACT_PENDING`.
 
-        **Предусловие:** заявка в статусе `CONTRACT_PENDING`; иначе `409 INVALID_APPLICATION_STATE`.
+        **Что делает сервер (синхронно):** запрашивает у платформы актуальную версию договора —
+        INT-DRP-02 (таймаут попытки 1,5 с, повтор `RP-EXP`) и возвращает идентификатор и версию
+        договора, ссылки на документ, правила платформы и тарифы (AC-09, BR-DR-OPEN-08).
+        После отказа `CONTRACT_VERSION_OUTDATED` приложение вызывает операцию заново (A7).
 
-        **Что делает сервер:** синхронно получает договор на платформе ЦР (`DR_PLATFORM`).
-        Статус заявки не меняется.
-
-        **Недоступность платформы:** `503 PLATFORM_UNAVAILABLE` / `504 UPSTREAM_TIMEOUT`;
-        запрос можно повторить (операция чтения идемпотентна, AC-17).
+        **Ошибки:** `409 INVALID_APPLICATION_STATE` — заявка не в `CONTRACT_PENDING`
+        (в т. ч. `EXPIRED`, AC-19); `503 PLATFORM_UNAVAILABLE` / `504 UPSTREAM_TIMEOUT` —
+        платформа недоступна, повторы исчерпаны, статус не меняется (AC-17, E1).
+        Критерии приёмки: AC-09, AC-11, AC-17, AC-18, AC-19.
       tags: [Wallet Opening]
       x-jira-key: SCRUM-2194
-      x-acceptance-criteria: [AC-09, AC-17, AC-18]
-      x-business-rules: [BR-GEN-01, BR-GEN-02, BR-DR-OPEN-08, BR-DR-OPEN-09, BR-TIME-03]
+      x-acceptance-criteria: [AC-09, AC-11, AC-17, AC-18, AC-19]
+      x-business-rules: [BR-GEN-02, BR-DR-OPEN-08, BR-DR-OPEN-09, BR-TIME-03]
       x-external-systems: [DR_PLATFORM]
       parameters:
-        - $ref: '#/components/parameters/XRequestId'
         - $ref: '#/components/parameters/ApplicationId'
+        - $ref: '#/components/parameters/XRequestId'
       responses:
         '200':
-          description: Актуальная версия договора.
+          description: Актуальная версия договора (AC-09).
           headers:
             X-Request-Id:
               $ref: '#/components/headers/XRequestId'
@@ -413,15 +471,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/WalletContract'
-              examples:
-                contract:
-                  summary: Договор счёта цифрового рубля
-                  value:
-                    contractId: 1c2d3e4f-5a6b-4c7d-8e9f-0a1b2c3d4e5f
-                    contractVersion: '2026.09.01'
-                    documentUrl: https://dr-platform.example/documents/contract/2026.09.01.pdf
-                    platformRulesUrl: https://dr-platform.example/documents/rules/current.pdf
-                    tariffsUrl: https://dr-platform.example/documents/tariffs/current.pdf
+              example:
+                contractId: DR-CONTRACT-2026
+                contractVersion: '3.1'
+                documentUrl: https://docs.platform.example/dr/contract/3.1.pdf
+                platformRulesUrl: https://docs.platform.example/dr/rules.pdf
+                tariffsUrl: https://docs.platform.example/dr/tariffs.pdf
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -433,7 +488,7 @@ paths:
         '500':
           $ref: '#/components/responses/InternalServerError'
         '503':
-          $ref: '#/components/responses/ServiceUnavailable'
+          $ref: '#/components/responses/PlatformUnavailable'
         '504':
           $ref: '#/components/responses/GatewayTimeout'
 
@@ -442,51 +497,47 @@ paths:
       operationId: acceptWalletApplicationContract
       summary: Принять договор счёта цифрового рубля
       description: |
-        Фиксирует согласие клиента с договором, правилами платформы и тарифами
-        с указанием версии договора (шаг 8 сценария, AC-10). Счёт открывается только
-        по явному волеизъявлению клиента (`accepted: true`).
+        Шаг 8 сценария SCRUM-2194. **Предусловие:** заявка в статусе `CONTRACT_PENDING`,
+        клиент ознакомился с актуальной версией договора.
 
-        **Предусловие:** заявка в статусе `CONTRACT_PENDING`; иначе `409 INVALID_APPLICATION_STATE`.
+        **Что делает сервер (синхронно):** проверяет явное согласие (`accepted: true`,
+        BR-DR-OPEN-07) и актуальность `contractVersion`, фиксирует согласие с версией
+        и временем принятия (AC-10, BR-DR-OPEN-08) и переводит заявку в `KEYS_PENDING`.
+        Внешние системы не вызываются: версия сверяется с актуальной версией, полученной
+        модулем от платформы (INT-DRP-02).
 
-        **Что делает сервер:** сверяет переданную версию с актуальной версией договора
-        на платформе ЦР (`DR_PLATFORM`, синхронно). Если версия устарела —
-        `409 CONTRACT_VERSION_OUTDATED`, приложение заново запрашивает договор (AC-11).
-        Иначе сохраняет версию и время согласия и переводит заявку в `KEYS_PENDING`.
+        **Ошибки:** `409 CONTRACT_VERSION_OUTDATED` — Банк России опубликовал новую версию,
+        согласие не принимается, приложение получает договор заново (AC-11, A7, BR-DR-OPEN-09);
+        `409 INVALID_APPLICATION_STATE` — заявка не в `CONTRACT_PENDING` (в т. ч. `EXPIRED`,
+        AC-19); `422 IDEMPOTENCY_KEY_REUSED`.
 
-        Отказ клиента от договора (A6) — операция `cancelWalletApplication`.
-
-        **Недоступность платформы:** `503 PLATFORM_UNAVAILABLE` / `504 UPSTREAM_TIMEOUT`,
-        статус заявки не меняется (AC-17).
-
-        **Идемпотентность:** если сервер уже перевёл заявку в `KEYS_PENDING`, а клиент не получил ответ
-        (например, `504`), повтор с тем же `Idempotency-Key` возвращает тот же `200`, а не
-        `409 INVALID_APPLICATION_STATE`. Тот же ключ с другим телом — `422 IDEMPOTENCY_KEY_REUSED`.
+        **Повтор после таймаута:** если сервер уже выполнил переход, а приложение не получило
+        ответ, повтор с тем же `Idempotency-Key` возвращает сохранённый итоговый ответ
+        (`200`, заявка в `KEYS_PENDING`), а не `409 INVALID_APPLICATION_STATE` (AC-20, E4,
+        BR-IDM-01). Критерии приёмки: AC-10, AC-11, AC-18, AC-19, AC-20.
       tags: [Wallet Opening]
       x-jira-key: SCRUM-2194
-      x-acceptance-criteria: [AC-10, AC-11, AC-17, AC-18]
-      x-business-rules: [BR-GEN-01, BR-GEN-02, BR-DR-OPEN-07, BR-DR-OPEN-08, BR-DR-OPEN-09, BR-TIME-03, BR-IDM-01, BR-IDM-02]
-      x-external-systems: [DR_PLATFORM]
-      x-assumption: Актуальность версии договора проверяется запросом к платформе ЦР (integrations.md, таблица ошибок платформы); в Task шаг 8 не помечен как обращение к внешней системе.
+      x-acceptance-criteria: [AC-10, AC-11, AC-18, AC-19, AC-20]
+      x-business-rules: [BR-GEN-02, BR-DR-OPEN-07, BR-DR-OPEN-08, BR-DR-OPEN-09, BR-IDM-01, BR-IDM-02]
+      x-assumption: A-01. Актуальность версии проверяется по версии, известной модулю от платформы (INT-DRP-02), без вызова платформы в этом запросе — в Task у шага 8 нет [EXT].
       parameters:
-        - $ref: '#/components/parameters/XRequestId'
         - $ref: '#/components/parameters/ApplicationId'
         - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/XRequestId'
       requestBody:
         required: true
         content:
           application/json:
             schema:
               $ref: '#/components/schemas/AcceptWalletContractRequest'
-            examples:
-              accept:
-                summary: Клиент принимает договор
-                value:
-                  contractId: 1c2d3e4f-5a6b-4c7d-8e9f-0a1b2c3d4e5f
-                  contractVersion: '2026.09.01'
-                  accepted: true
+            example:
+              contractVersion: '3.1'
+              accepted: true
       responses:
         '200':
-          description: Согласие зафиксировано, заявка в статусе `KEYS_PENDING`.
+          description: |
+            Согласие зафиксировано, заявка в статусе `KEYS_PENDING` (AC-10). Тот же ответ
+            возвращается при повторе с тем же `Idempotency-Key` (AC-20).
           headers:
             X-Request-Id:
               $ref: '#/components/headers/XRequestId'
@@ -494,18 +545,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/WalletApplication'
-              examples:
-                keysPending:
-                  summary: Договор принят
-                  value:
-                    id: 3f6c1e2a-7b4d-4c1e-9a2b-1d2e3f4a5b6c
-                    ownerType: INDIVIDUAL
-                    status: KEYS_PENDING
-                    acceptedContractVersion: '2026.09.01'
-                    contractAcceptedAt: '2026-11-19T14:25:10+03:00'
-                    expiresAt: '2026-11-20T14:21:00+03:00'
-                    createdAt: '2026-11-19T14:21:00+03:00'
-                    updatedAt: '2026-11-19T14:25:10+03:00'
+              example:
+                applicationId: 3f6c1e2a-8b4d-4c21-9a7e-1d2f3a4b5c60
+                ownerType: INDIVIDUAL
+                status: KEYS_PENDING
+                expiresAt: '2026-11-24T10:00:00+03:00'
+                createdAt: '2026-11-23T10:00:00+03:00'
+                updatedAt: '2026-11-23T10:08:00+03:00'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -514,100 +560,90 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           description: |
-            Конфликт состояния. Возможные `code`:
-            - `CONTRACT_VERSION_OUTDATED` — Банк России опубликовал новую версию договора; нужно запросить договор заново (AC-11);
-            - `INVALID_APPLICATION_STATE` — заявка не в статусе `CONTRACT_PENDING`.
-          headers:
-            X-Request-Id:
-              $ref: '#/components/headers/XRequestId'
+            - `CONTRACT_VERSION_OUTDATED` — версия договора устарела (AC-11, BR-DR-OPEN-09);
+            - `INVALID_APPLICATION_STATE` — заявка не в `CONTRACT_PENDING` (§8.1, AC-19).
           content:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
               examples:
                 contractVersionOutdated:
-                  summary: Версия договора устарела
+                  summary: Устаревшая версия договора (AC-11)
                   value:
                     type: https://api.bank.example/problems/contract-version-outdated
-                    title: Версия договора устарела
+                    title: Contract version outdated
                     status: 409
                     code: CONTRACT_VERSION_OUTDATED
-                    traceId: 0af7651916cd43dd8448eb211c80319c
-                invalidState:
-                  summary: Заявка не в статусе CONTRACT_PENDING
-                  value:
-                    type: https://api.bank.example/problems/invalid-application-state
-                    title: Недопустимое действие для текущего статуса заявки
-                    status: 409
-                    code: INVALID_APPLICATION_STATE
-                    traceId: 0af7651916cd43dd8448eb211c80319c
+                    traceId: 0af7651916cd43dd8448eb211c8031a4
+                invalidApplicationState:
+                  $ref: '#/components/examples/InvalidApplicationState'
         '422':
           $ref: '#/components/responses/IdempotencyKeyReused'
         '500':
           $ref: '#/components/responses/InternalServerError'
-        '503':
-          $ref: '#/components/responses/ServiceUnavailable'
-        '504':
-          $ref: '#/components/responses/GatewayTimeout'
 
   /wallet-applications/{applicationId}/certificate-requests:
     post:
       operationId: submitCertificateRequest
-      summary: Передать запрос на сертификат ключа проверки ЭП
+      summary: Передать запрос на сертификат ключа проверки ЭП и открыть счёт
       description: |
-        Принимает запрос на сертификат ключа проверки ЭП (CSR), созданный на устройстве клиента
-        (шаг 10 сценария, AC-13). Закрытый ключ в API не передаётся.
+        Шаг 10 сценария SCRUM-2194. **Предусловие:** заявка в статусе `KEYS_PENDING`; ключи ЭП
+        созданы на устройстве. В запросе передаётся только CSR; закрытый ключ остаётся
+        на устройстве и в API отсутствует (AC-13, BR-DR-OPEN-10).
 
-        **Предусловие:** заявка в статусе `KEYS_PENDING`; иначе `409 INVALID_APPLICATION_STATE`.
+        **Синхронная часть:**
+        1. Для `SOLE_PROPRIETOR` — сведения об ИП из АБС, INT-ABS-01 (таймаут попытки 1 с,
+           повтор `RP-EXP`); дополнительных сведений от клиента не требуется (BR-DR-OPEN-15).
+        2. Проверка заявки антифродом — INT-AF-01 (таймаут попытки 500 мс, повтор `RP-EXP`,
+           BR-AF-01). `REVIEW` → `ON_REVIEW`; `DENY` → `REJECTED` с общей причиной
+           `OPERATION_DECLINED_BY_SECURITY`, без деталей проверки (AC-14, BR-AF-02, BR-AF-03).
+        3. При `ALLOW` — отправка запроса на выпуск сертификата и открытие счёта на платформу,
+           INT-DRP-03 (подтверждение приёма — 1,5 с). Повтор отправки — только после уточнения
+           статуса INT-DRP-08 (NFR-AV-03). Заявка — `PROCESSING`.
 
-        **Что делает сервер синхронно, до ответа `202`:**
-        1. для кошелька ИП получает сведения об ИП из АБС (`CORE_BANKING`);
-        2. проверяет заявку в антифроде (`ANTIFRAUD`, таймаут 500 мс; при таймауте или недоступности
-           результат считается `REVIEW`);
-        3. при `ALLOW` передаёт на платформу ЦР (`DR_PLATFORM`) запрос на выпуск сертификата
-           и открытие счёта (с подтверждением приёма).
+        **Ответ:** `202` и заявка в статусе `PROCESSING`, `ON_REVIEW` или `REJECTED`; результат
+        открытия — асинхронно, опросом `getWalletApplication` с интервалом 2 с (NFR-PERF-02,
+        NFR-PERF-03). Итог: `COMPLETED` с `walletId` (AC-15) или `REJECTED`
+        (`CERTIFICATE_ISSUE_FAILED`, `WALLET_OPENING_REFUSED`, A9).
 
-        Ответ `202` содержит заявку в статусе по результату антифрода (AC-13, AC-14):
-        `PROCESSING` — `ALLOW`, запрос передан на платформу; `ON_REVIEW` — `REVIEW`;
-        `REJECTED` с `rejectReason: OPERATION_DECLINED_BY_SECURITY` — `DENY`, без деталей проверки.
+        **Ошибки (заявка остаётся в `KEYS_PENDING`):**
+        - `503 SERVICE_UNAVAILABLE` — проверка безопасности недоступна, повторы исчерпаны
+          (AC-21, E3, BR-AF-06); ни ручная проверка, ни отказ не применяются;
+        - `503 PLATFORM_UNAVAILABLE` / `504 UPSTREAM_TIMEOUT` — платформа не подтвердила приём
+          (AC-17, E1);
+        - `503 CORE_BANKING_UNAVAILABLE` / `504 UPSTREAM_TIMEOUT` — АБС недоступна (только
+          `SOLE_PROPRIETOR`).
+        Ответы `5xx` по ключу идемпотентности не сохраняются: повтор с тем же `Idempotency-Key`
+        выполняет запрос заново, включая проверку антифрода (BR-IDM-03).
 
-        **Асинхронно:** результат платформы — `COMPLETED` с `walletId` или `REJECTED`
-        (`CERTIFICATE_ISSUE_FAILED` / `WALLET_OPENING_REFUSED`) (AC-15); из `ON_REVIEW` после
-        ручной проверки — `PROCESSING` или `REJECTED`. Клиент узнаёт итог опросом
-        `getWalletApplication` с интервалом 2 с.
-
-        После передачи CSR отменить заявку нельзя.
-
-        **Недоступность внешней системы:** `503 PLATFORM_UNAVAILABLE` / `CORE_BANKING_UNAVAILABLE`
-        или `504 UPSTREAM_TIMEOUT`, заявка остаётся в `KEYS_PENDING`; запрос можно повторить
-        с тем же `Idempotency-Key` (AC-17).
+        **Прочие ошибки:** `409 INVALID_APPLICATION_STATE` — заявка не в `KEYS_PENDING`
+        (в т. ч. `EXPIRED`, AC-19); `422 IDEMPOTENCY_KEY_REUSED`.
+        Критерии приёмки: AC-13, AC-14, AC-15, AC-17, AC-18, AC-19, AC-21.
       tags: [Wallet Opening]
       x-jira-key: SCRUM-2194
-      x-acceptance-criteria: [AC-13, AC-14, AC-15, AC-17, AC-18]
-      x-business-rules: [BR-GEN-01, BR-GEN-02, BR-DR-OPEN-10, BR-DR-OPEN-15, BR-AF-01, BR-AF-02, BR-AF-03, BR-AML-01, BR-IDM-01, BR-IDM-02, BR-TIME-03]
-      x-external-systems: [CORE_BANKING, DR_PLATFORM, ANTIFRAUD]
-      x-assumption: Сведения из АБС, проверка антифрода и передача запроса на платформу выполняются синхронно до ответа 202 (Task — антифрод синхронно, платформа на шаге 10 асинхронно; integrations.md — последовательность АФ → платформа → 202; E1 и AC-17 — ошибка недоступности возвращается клиенту). Результат платформы — асинхронно.
+      x-acceptance-criteria: [AC-13, AC-14, AC-15, AC-17, AC-18, AC-19, AC-21]
+      x-business-rules: [BR-GEN-02, BR-DR-OPEN-10, BR-DR-OPEN-14, BR-DR-OPEN-15, BR-AF-01, BR-AF-02, BR-AF-03, BR-AF-06, BR-AML-01, BR-IDM-01, BR-IDM-02, BR-IDM-03, BR-TIME-03]
+      x-external-systems: [CORE_BANKING, ANTIFRAUD, DR_PLATFORM]
+      x-assumption: A-02, A-03, A-04 (см. info.description и отчёт проверки).
       parameters:
-        - $ref: '#/components/parameters/XRequestId'
         - $ref: '#/components/parameters/ApplicationId'
         - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/XRequestId'
       requestBody:
         required: true
         content:
           application/json:
             schema:
               $ref: '#/components/schemas/SubmitCertificateRequestRequest'
-            examples:
-              gost256:
-                summary: CSR для ключа ГОСТ Р 34.10-2012 (256 бит)
-                value:
-                  csr: TUlJQkVqQ0J3QUlCQURBV01SUXdFZ1lEVlFRRERBdFVSVk5VTFVOVFVpMHdNUT09
-                  keyAlgorithm: GOST_R_34_10_2012_256
+            example:
+              csr: MIIBkTCCATcCAQAwVTELMAkGA1UEBhMCUlUxEzARBgNVBAMMClRlc3QgVXNlcjEx
+              keyAlgorithm: GOST_R_34_10_2012_256
       responses:
         '202':
           description: |
-            Запрос принят. Заявка в статусе `PROCESSING` (антифрод `ALLOW`), `ON_REVIEW` (`REVIEW`)
-            или `REJECTED` с `rejectReason: OPERATION_DECLINED_BY_SECURITY` (`DENY`).
+            Запрос принят к асинхронной обработке (AC-13). Статус заявки — `PROCESSING`;
+            при решении антифрода `REVIEW` — `ON_REVIEW`, при `DENY` — `REJECTED`
+            с `rejectReason: OPERATION_DECLINED_BY_SECURITY` (AC-14).
           headers:
             Location:
               $ref: '#/components/headers/Location'
@@ -619,39 +655,33 @@ paths:
                 $ref: '#/components/schemas/WalletApplication'
               examples:
                 processing:
-                  summary: Заявка в обработке
+                  summary: Принято, идёт открытие счёта (AC-13)
                   value:
-                    id: 3f6c1e2a-7b4d-4c1e-9a2b-1d2e3f4a5b6c
+                    applicationId: 3f6c1e2a-8b4d-4c21-9a7e-1d2f3a4b5c60
                     ownerType: INDIVIDUAL
                     status: PROCESSING
-                    acceptedContractVersion: '2026.09.01'
-                    contractAcceptedAt: '2026-11-19T14:25:10+03:00'
-                    expiresAt: '2026-11-20T14:21:00+03:00'
-                    createdAt: '2026-11-19T14:21:00+03:00'
-                    updatedAt: '2026-11-19T14:26:02+03:00'
+                    expiresAt: '2026-11-24T10:00:00+03:00'
+                    createdAt: '2026-11-23T10:00:00+03:00'
+                    updatedAt: '2026-11-23T10:12:00+03:00'
                 onReview:
-                  summary: Антифрод требует дополнительной проверки
+                  summary: Требуется дополнительная проверка (AC-14)
                   value:
-                    id: 3f6c1e2a-7b4d-4c1e-9a2b-1d2e3f4a5b6c
+                    applicationId: 3f6c1e2a-8b4d-4c21-9a7e-1d2f3a4b5c60
                     ownerType: INDIVIDUAL
                     status: ON_REVIEW
-                    acceptedContractVersion: '2026.09.01'
-                    contractAcceptedAt: '2026-11-19T14:25:10+03:00'
-                    expiresAt: '2026-11-20T14:21:00+03:00'
-                    createdAt: '2026-11-19T14:21:00+03:00'
-                    updatedAt: '2026-11-19T14:26:02+03:00'
-                rejectedSecurity:
-                  summary: Отказ по результатам проверки безопасности
+                    expiresAt: '2026-11-24T10:00:00+03:00'
+                    createdAt: '2026-11-23T10:00:00+03:00'
+                    updatedAt: '2026-11-23T10:12:00+03:00'
+                declined:
+                  summary: Отказ по результатам проверки (AC-14)
                   value:
-                    id: 3f6c1e2a-7b4d-4c1e-9a2b-1d2e3f4a5b6c
+                    applicationId: 3f6c1e2a-8b4d-4c21-9a7e-1d2f3a4b5c60
                     ownerType: INDIVIDUAL
                     status: REJECTED
                     rejectReason: OPERATION_DECLINED_BY_SECURITY
-                    acceptedContractVersion: '2026.09.01'
-                    contractAcceptedAt: '2026-11-19T14:25:10+03:00'
-                    expiresAt: '2026-11-20T14:21:00+03:00'
-                    createdAt: '2026-11-19T14:21:00+03:00'
-                    updatedAt: '2026-11-19T14:26:02+03:00'
+                    expiresAt: '2026-11-24T10:00:00+03:00'
+                    createdAt: '2026-11-23T10:00:00+03:00'
+                    updatedAt: '2026-11-23T10:12:00+03:00'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -665,7 +695,45 @@ paths:
         '500':
           $ref: '#/components/responses/InternalServerError'
         '503':
-          $ref: '#/components/responses/ServiceUnavailable'
+          description: |
+            Внешняя система недоступна, повторы исчерпаны; заявка остаётся в `KEYS_PENDING`,
+            запрос можно повторить с тем же `Idempotency-Key` (проверки выполняются заново,
+            BR-IDM-03):
+            - `SERVICE_UNAVAILABLE` — проверка безопасности (AC-21, E3, BR-AF-06);
+            - `PLATFORM_UNAVAILABLE` — платформа цифрового рубля (AC-17, E1);
+            - `CORE_BANKING_UNAVAILABLE` — АБС (только `SOLE_PROPRIETOR`).
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+              examples:
+                securityCheckUnavailable:
+                  summary: Проверка безопасности недоступна (AC-21)
+                  value:
+                    type: https://api.bank.example/problems/service-unavailable
+                    title: Service unavailable
+                    status: 503
+                    code: SERVICE_UNAVAILABLE
+                    traceId: 0af7651916cd43dd8448eb211c8031a5
+                platformUnavailable:
+                  summary: Платформа недоступна (AC-17)
+                  value:
+                    type: https://api.bank.example/problems/platform-unavailable
+                    title: Platform unavailable
+                    status: 503
+                    code: PLATFORM_UNAVAILABLE
+                    traceId: 0af7651916cd43dd8448eb211c8031a6
+                coreBankingUnavailable:
+                  summary: АБС недоступна (кошелёк ИП)
+                  value:
+                    type: https://api.bank.example/problems/core-banking-unavailable
+                    title: Core banking unavailable
+                    status: 503
+                    code: CORE_BANKING_UNAVAILABLE
+                    traceId: 0af7651916cd43dd8448eb211c8031a7
         '504':
           $ref: '#/components/responses/GatewayTimeout'
 
@@ -674,26 +742,31 @@ paths:
       operationId: cancelWalletApplication
       summary: Отменить заявку на открытие кошелька
       description: |
-        Отменяет заявку по решению клиента, в том числе при отказе от договора (A6, AC-12).
+        Альтернатива A6 сценария SCRUM-2194: клиент отказывается от открытия (в т. ч. от
+        договора на шаге 7). **Предусловие:** заявка в нефинальном статусе до передачи запроса
+        на сертификат — `CREATED`, `ESIA_PENDING`, `CONTRACT_PENDING` или `KEYS_PENDING`
+        (§8.1, FR-OPEN-11). Заявка переходит в `CANCELLED` (AC-12). Внешние системы
+        не вызываются.
 
-        **Предусловие:** заявка в статусе `CREATED`, `ESIA_PENDING`, `CONTRACT_PENDING` или
-        `KEYS_PENDING` (до передачи запроса на сертификат); иначе `409 INVALID_APPLICATION_STATE`.
+        **Ошибки:** `409 INVALID_APPLICATION_STATE` — заявка в другом статусе (в т. ч.
+        `EXPIRED`, AC-19); `422 IDEMPOTENCY_KEY_REUSED`.
 
-        **Результат:** заявка в финальном статусе `CANCELLED`. Внешние системы не вызываются.
-
-        **Идемпотентность:** повтор с тем же `Idempotency-Key` после успешной отмены возвращает тот же `200`
-        с `CANCELLED`, а не `409 INVALID_APPLICATION_STATE`. Тот же ключ с другим телом — `422 IDEMPOTENCY_KEY_REUSED`.
+        **Повтор после таймаута:** повтор с тем же `Idempotency-Key` возвращает сохранённый
+        итоговый ответ (`200`, заявка в `CANCELLED`), а не `409 INVALID_APPLICATION_STATE`
+        (AC-20, E4, BR-IDM-01). Критерии приёмки: AC-12, AC-18, AC-19, AC-20.
       tags: [Wallet Opening]
       x-jira-key: SCRUM-2194
-      x-acceptance-criteria: [AC-12, AC-18]
-      x-business-rules: [BR-GEN-01, BR-GEN-02, BR-IDM-01, BR-IDM-02]
+      x-acceptance-criteria: [AC-12, AC-18, AC-19, AC-20]
+      x-business-rules: [BR-GEN-02, BR-IDM-01, BR-IDM-02]
       parameters:
-        - $ref: '#/components/parameters/XRequestId'
         - $ref: '#/components/parameters/ApplicationId'
         - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/XRequestId'
       responses:
         '200':
-          description: Заявка отменена.
+          description: |
+            Заявка отменена, статус `CANCELLED` (AC-12). Тот же ответ возвращается при повторе
+            с тем же `Idempotency-Key` (AC-20).
           headers:
             X-Request-Id:
               $ref: '#/components/headers/XRequestId'
@@ -701,16 +774,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/WalletApplication'
-              examples:
-                cancelled:
-                  summary: Заявка отменена
-                  value:
-                    id: 3f6c1e2a-7b4d-4c1e-9a2b-1d2e3f4a5b6c
-                    ownerType: INDIVIDUAL
-                    status: CANCELLED
-                    expiresAt: '2026-11-20T14:21:00+03:00'
-                    createdAt: '2026-11-19T14:21:00+03:00'
-                    updatedAt: '2026-11-19T14:24:00+03:00'
+              example:
+                applicationId: 3f6c1e2a-8b4d-4c21-9a7e-1d2f3a4b5c60
+                ownerType: INDIVIDUAL
+                status: CANCELLED
+                expiresAt: '2026-11-24T10:00:00+03:00'
+                createdAt: '2026-11-23T10:00:00+03:00'
+                updatedAt: '2026-11-23T10:07:00+03:00'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -727,36 +797,31 @@ paths:
   /wallets/{walletId}:
     get:
       operationId: getWallet
-      summary: Получить данные кошелька
+      summary: Получить данные открытого кошелька цифрового рубля
       description: |
-        Возвращает данные открытого кошелька для экрана кошелька (шаг 13 сценария, AC-16):
-        тип, статус, маскированный номер, баланс и дату открытия. Идентификатор кошелька —
-        из поля `walletId` заявки в статусе `COMPLETED`.
+        Шаг 13 сценария SCRUM-2194. **Предусловие:** заявка в статусе `COMPLETED`, `walletId`
+        получен из заявки; кошелёк принадлежит клиенту (BR-GEN-02).
 
-        **Что делает сервер:** синхронно получает статус и баланс на платформе ЦР (`DR_PLATFORM`).
-        Сразу после открытия кошелёк в статусе `ACTIVE` с балансом 0,00 ₽.
+        **Что делает сервер (синхронно):** получает статус и баланс кошелька на платформе —
+        INT-DRP-04 (таймаут попытки 1,5 с, повтор `RP-EXP`); баланс — данные платформы,
+        а не АБС (FR-GEN-05). Возвращает тип кошелька, статус, маскированный номер, баланс
+        и дату открытия (AC-16, FR-OPEN-13). Полный номер кошелька не возвращается
+        (SD-API-04, SD-API-05).
 
-        Ответ содержит банковскую тайну и не кэшируется (`Cache-Control: no-store`).
-        Кошелёк другого клиента или несуществующий — `404`.
-
-        **Недоступность платформы:** `503 PLATFORM_UNAVAILABLE` / `504 UPSTREAM_TIMEOUT` (AC-17).
+        **Ошибки:** `404` — чужой или несуществующий кошелёк; `503 PLATFORM_UNAVAILABLE` /
+        `504 UPSTREAM_TIMEOUT` — платформа недоступна, повторы исчерпаны (AC-17).
+        Критерии приёмки: AC-16, AC-17.
       tags: [Wallet Opening]
       x-jira-key: SCRUM-2194
       x-acceptance-criteria: [AC-16, AC-17]
-      x-business-rules: [BR-GEN-01, BR-GEN-02, BR-TIME-03]
+      x-business-rules: [BR-GEN-02, BR-TIME-03]
       x-external-systems: [DR_PLATFORM]
       parameters:
+        - $ref: '#/components/parameters/WalletId'
         - $ref: '#/components/parameters/XRequestId'
-        - name: walletId
-          in: path
-          required: true
-          description: Идентификатор кошелька (из `walletId` заявки).
-          schema:
-            type: string
-            format: uuid
       responses:
         '200':
-          description: Данные кошелька.
+          description: Данные кошелька (AC-16). Содержит банковскую тайну — не кэшируется.
           headers:
             Cache-Control:
               $ref: '#/components/headers/CacheControlNoStore'
@@ -766,18 +831,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Wallet'
-              examples:
-                newWallet:
-                  summary: Только что открытый личный кошелёк
-                  value:
-                    id: 6a7b8c9d-0e1f-4a2b-9c3d-4e5f6a7b8c9d
-                    ownerType: INDIVIDUAL
-                    status: ACTIVE
-                    walletNumberMasked: '**** 7788'
-                    balance:
-                      value: '0.00'
-                      currency: RUB
-                    openedAt: '2026-11-19T14:27:40+03:00'
+              example:
+                walletId: 9c8b7a6d-5e4f-4321-8765-0fedcba98765
+                ownerType: INDIVIDUAL
+                status: ACTIVE
+                walletNumberMasked: '**** 7788'
+                balance:
+                  value: '0.00'
+                  currency: RUB
+                openedAt: '2026-11-23T10:12:20+03:00'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -787,7 +849,7 @@ paths:
         '500':
           $ref: '#/components/responses/InternalServerError'
         '503':
-          $ref: '#/components/responses/ServiceUnavailable'
+          $ref: '#/components/responses/PlatformUnavailable'
         '504':
           $ref: '#/components/responses/GatewayTimeout'
 
@@ -797,12 +859,13 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
+      description: Токен доступа (JWT), выпущенный сервером авторизации банка; клиент определяется по токену (BR-GEN-01).
   parameters:
     XRequestId:
       name: X-Request-Id
       in: header
       required: false
-      description: Сквозной идентификатор запроса для трассировки.
+      description: Сквозной идентификатор запроса для трассировки (NFR-OBS-01).
       schema:
         type: string
         format: uuid
@@ -810,7 +873,12 @@ components:
       name: Idempotency-Key
       in: header
       required: true
-      description: Ключ идемпотентности; повтор с тем же ключом в течение 24 часов возвращает исходный результат.
+      description: |
+        Ключ идемпотентности (UUID, без ПДн). Повтор с тем же ключом в течение 24 часов
+        возвращает исходный итоговый ответ и не выполняет действие повторно (BR-IDM-01,
+        NFR-AV-04). Повтор с тем же ключом и другим телом — `422 IDEMPOTENCY_KEY_REUSED`
+        (BR-IDM-02). Сохраняются только итоговые ответы (2xx, 4xx); ответы 5xx не сохраняются —
+        повтор выполняет запрос заново, включая проверку антифрода (BR-IDM-03).
       schema:
         type: string
         format: uuid
@@ -822,9 +890,17 @@ components:
       schema:
         type: string
         format: uuid
+    WalletId:
+      name: walletId
+      in: path
+      required: true
+      description: Идентификатор кошелька (из заявки в статусе `COMPLETED`).
+      schema:
+        type: string
+        format: uuid
   headers:
     CacheControlNoStore:
-      description: Ответ содержит конфиденциальные данные и не кэшируется.
+      description: Ответ содержит конфиденциальные данные и не кэшируется (SD-API-10).
       schema:
         type: string
         enum: [no-store]
@@ -839,7 +915,7 @@ components:
         type: integer
         minimum: 1
     XRequestId:
-      description: Сквозной идентификатор запроса (переданный клиентом или сгенерированный сервером).
+      description: Идентификатор запроса из `X-Request-Id` или сгенерированный сервером (NFR-OBS-01).
       schema:
         type: string
         format: uuid
@@ -847,35 +923,24 @@ components:
     OwnerType:
       type: string
       description: |
-        Тип кошелька (владельца счёта цифрового рубля):
-        - `INDIVIDUAL` — личный кошелёк физического лица;
-        - `SOLE_PROPRIETOR` — кошелёк ИП для предпринимательской деятельности.
+        Тип кошелька (владельца счёта цифрового рубля): `INDIVIDUAL` — личный кошелёк
+        физического лица; `SOLE_PROPRIETOR` — кошелёк ИП для предпринимательской деятельности
+        (BR-DR-OPEN-04, BR-DR-OPEN-05, FR-GEN-04).
       enum: [INDIVIDUAL, SOLE_PROPRIETOR]
-      x-business-rules: [BR-DR-OPEN-04, BR-DR-OPEN-05]
     WalletApplicationStatus:
       type: string
       description: |
-        Статус заявки (business-rules §8.1):
-        `CREATED` — создана; `ESIA_PENDING` — ожидаются данные из Госуслуг;
-        `CONTRACT_PENDING` — ожидается принятие договора; `KEYS_PENDING` — ожидается CSR;
-        `PROCESSING` — регистрация на платформе и проверки; `ON_REVIEW` — дополнительная проверка;
-        `COMPLETED` — кошелёк открыт; `REJECTED` — отказ (причина в `rejectReason`);
-        `CANCELLED` — отменена клиентом; `EXPIRED` — истёк срок; `FAILED` — техническая ошибка.
-      enum:
-        - CREATED
-        - ESIA_PENDING
-        - CONTRACT_PENDING
-        - KEYS_PENDING
-        - PROCESSING
-        - ON_REVIEW
-        - COMPLETED
-        - REJECTED
-        - CANCELLED
-        - EXPIRED
-        - FAILED
+        Статус заявки (business-rules §8.1): `CREATED` — создана; `ESIA_PENDING` — ожидается
+        авторизация в Госуслугах; `CONTRACT_PENDING` — ожидается принятие договора;
+        `KEYS_PENDING` — ожидается запрос на сертификат; `PROCESSING` — проверки и открытие
+        счёта на платформе; `ON_REVIEW` — дополнительная проверка; `COMPLETED` — кошелёк
+        открыт; `REJECTED` — отказ (см. `rejectReason`); `CANCELLED` — отменена клиентом;
+        `EXPIRED` — истёк срок; `FAILED` — техническая ошибка без повтора. Финальные:
+        `COMPLETED`, `REJECTED`, `CANCELLED`, `EXPIRED`, `FAILED`.
+      enum: [CREATED, ESIA_PENDING, CONTRACT_PENDING, KEYS_PENDING, PROCESSING, ON_REVIEW, COMPLETED, REJECTED, CANCELLED, EXPIRED, FAILED]
+      x-assumption: A-06. Условия перехода в `FAILED` не заданы в Task и контексте; статус включён по §8.1, поле `errorCode` не добавлено до уточнения.
     CreateWalletApplicationRequest:
       type: object
-      description: Запрос на создание заявки на открытие кошелька. Клиент определяется по токену (BR-GEN-01).
       additionalProperties: false
       required: [ownerType]
       properties:
@@ -883,10 +948,10 @@ components:
           $ref: '#/components/schemas/OwnerType'
     WalletApplication:
       type: object
-      description: Заявка на открытие кошелька цифрового рубля.
-      required: [id, ownerType, status, expiresAt, createdAt, updatedAt]
+      description: Заявка на открытие кошелька цифрового рубля. Данных ЕСИА и деталей проверок не содержит (SD-API-16, BR-AF-03).
+      required: [applicationId, ownerType, status, expiresAt, createdAt, updatedAt]
       properties:
-        id:
+        applicationId:
           type: string
           format: uuid
           readOnly: true
@@ -899,142 +964,111 @@ components:
           type: string
           readOnly: true
           description: |
-            Причина отказа; есть только в статусе `REJECTED`:
-            - `ESIA_CONSENT_DENIED` — клиент отказал в согласии на передачу данных из Госуслуг (AC-07);
-            - `ESIA_ACCOUNT_NOT_CONFIRMED` — учётная запись на Госуслугах не подтверждена (AC-07);
-            - `WALLET_ALREADY_EXISTS` — счёт этого типа уже открыт на платформе через другой банк (AC-08);
-            - `OPERATION_DECLINED_BY_SECURITY` — отказ по результатам проверки безопасности, без деталей (AC-14, BR-AF-03);
-            - `CERTIFICATE_ISSUE_FAILED` — платформа отказала в выпуске сертификата (A9);
-            - `WALLET_OPENING_REFUSED` — отказ в открытии счёта (A9, BR-DR-OPEN-14, BR-AML-01).
-          enum:
-            - ESIA_CONSENT_DENIED
-            - ESIA_ACCOUNT_NOT_CONFIRMED
-            - WALLET_ALREADY_EXISTS
-            - OPERATION_DECLINED_BY_SECURITY
-            - CERTIFICATE_ISSUE_FAILED
-            - WALLET_OPENING_REFUSED
-        walletId:
-          type: string
-          format: uuid
-          readOnly: true
-          description: Идентификатор открытого кошелька; есть только в статусе `COMPLETED` (AC-15).
-        acceptedContractVersion:
-          type: string
-          readOnly: true
-          maxLength: 32
-          description: Версия договора, принятая клиентом (AC-10).
-        contractAcceptedAt:
-          type: string
-          format: date-time
-          readOnly: true
-          description: Время принятия договора клиентом (AC-10).
+            Причина отказа; присутствует только в статусе `REJECTED`.
+            `ESIA_CONSENT_DENIED`, `ESIA_ACCOUNT_NOT_CONFIRMED` — отказ на стороне Госуслуг (AC-07);
+            `WALLET_ALREADY_EXISTS` — счёт выбранного типа уже открыт через другой банк (AC-08);
+            `OPERATION_DECLINED_BY_SECURITY` — отказ по результатам проверки, без деталей (AC-14,
+            BR-AF-03); `CERTIFICATE_ISSUE_FAILED` — платформа отказала в выпуске сертификата (A9);
+            `WALLET_OPENING_REFUSED` — платформа или банк отказали в открытии счёта (A9,
+            BR-DR-OPEN-14, BR-AML-01).
+          enum: [ESIA_CONSENT_DENIED, ESIA_ACCOUNT_NOT_CONFIRMED, WALLET_ALREADY_EXISTS, OPERATION_DECLINED_BY_SECURITY, CERTIFICATE_ISSUE_FAILED, WALLET_OPENING_REFUSED]
         expiresAt:
           type: string
           format: date-time
           readOnly: true
-          description: Срок действия заявки (24 часа с момента создания); после него незавершённая заявка переходит в `EXPIRED` (AC-19).
+          description: Срок действия заявки — 24 часа с момента создания; после него заявка переходит в `EXPIRED` (AC-19, NFR-RET-01).
+        walletId:
+          type: string
+          format: uuid
+          readOnly: true
+          description: Идентификатор открытого кошелька; присутствует только в статусе `COMPLETED` (AC-15).
         createdAt:
           type: string
           format: date-time
           readOnly: true
-          description: Время создания заявки.
+          description: Дата и время создания заявки.
         updatedAt:
           type: string
           format: date-time
           readOnly: true
-          description: Время последнего изменения заявки.
+          description: Дата и время последнего изменения статуса заявки.
     EsiaAuthorization:
       type: object
-      description: Ссылка для перехода клиента в Госуслуги. Данные и токены ЕСИА не возвращаются (SD-API-16).
+      description: Результат начала авторизации в Госуслугах. Код авторизации и токены ЕСИА клиенту не возвращаются (sensitive-data §3.3).
       required: [applicationId, status, authorizationUrl]
       properties:
         applicationId:
           type: string
           format: uuid
-          readOnly: true
           description: Идентификатор заявки.
         status:
           $ref: '#/components/schemas/WalletApplicationStatus'
         authorizationUrl:
           type: string
           format: uri
-          readOnly: true
-          description: Ссылка для перехода клиента на страницу авторизации и согласия в Госуслугах.
+          description: Ссылка для перехода клиента в Госуслуги и согласия на передачу данных (AC-06, INT-ESIA-01).
+          x-sensitivity: { level: C1 }
     WalletContract:
       type: object
-      description: Актуальная версия договора счёта цифрового рубля и сопутствующие документы платформы (публичные данные).
+      description: Актуальная версия договора счёта цифрового рубля, правила платформы и тарифы (AC-09, BR-DR-OPEN-08). Публичные данные (C0).
       required: [contractId, contractVersion, documentUrl, platformRulesUrl, tariffsUrl]
       properties:
         contractId:
           type: string
-          format: uuid
-          readOnly: true
-          description: Идентификатор договора; передаётся при принятии договора.
+          maxLength: 64
+          description: Идентификатор договора на платформе.
+          x-assumption: A-05. Формат идентификатора договора на платформе не задан — строка.
         contractVersion:
           type: string
-          readOnly: true
           maxLength: 32
           description: Версия договора; передаётся при принятии договора.
         documentUrl:
           type: string
           format: uri
-          readOnly: true
           description: Ссылка на текст договора счёта цифрового рубля.
         platformRulesUrl:
           type: string
           format: uri
-          readOnly: true
           description: Ссылка на правила платформы цифрового рубля.
         tariffsUrl:
           type: string
           format: uri
-          readOnly: true
-          description: Ссылка на тарифы платформы цифрового рубля.
+          description: Ссылка на тарифы платформы (тарифы не зашиваются в схему, BR-DR-FEE-03).
     AcceptWalletContractRequest:
       type: object
-      description: Согласие клиента с договором счёта цифрового рубля, правилами платформы и тарифами.
       additionalProperties: false
-      required: [contractId, contractVersion, accepted]
+      required: [contractVersion, accepted]
       properties:
-        contractId:
-          type: string
-          format: uuid
-          description: Идентификатор договора, с которым ознакомился клиент.
         contractVersion:
           type: string
-          minLength: 1
           maxLength: 32
-          description: Версия договора, с которой ознакомился клиент; должна совпадать с актуальной.
+          description: Версия договора, с которой ознакомился клиент (из `getWalletApplicationContract`).
         accepted:
           type: boolean
           enum: [true]
-          description: Явное согласие клиента на открытие счёта (BR-DR-OPEN-07). Допустимо только `true`.
+          description: Явное согласие клиента с договором, правилами платформы и тарифами (BR-DR-OPEN-07).
     SubmitCertificateRequestRequest:
       type: object
-      description: Запрос на сертификат ключа проверки ЭП. Закрытый ключ остаётся на устройстве и не передаётся (BR-DR-OPEN-10).
       additionalProperties: false
       required: [csr, keyAlgorithm]
       properties:
         csr:
           type: string
-          format: byte
           writeOnly: true
           maxLength: 8192
-          description: Запрос на сертификат (PKCS#10, DER) в base64, сформированный на устройстве клиента.
-          x-sensitivity:
-            level: C1
-          x-assumption: Формат CSR (PKCS#10 DER в base64) и предельная длина не заданы в требованиях.
+          description: Запрос на сертификат ключа проверки ЭП (PKCS#10, Base64). Закрытый ключ не передаётся (BR-DR-OPEN-10).
+          x-sensitivity: { level: C1, log: MASK-HASH }
         keyAlgorithm:
           type: string
-          description: Алгоритм ключа ЭП.
-          enum: [GOST_R_34_10_2012_256, GOST_R_34_10_2012_512]
-          x-assumption: Перечень алгоритмов не задан в требованиях; приняты алгоритмы ГОСТ Р 34.10-2012.
+          maxLength: 64
+          description: Алгоритм ключа ЭП, созданного на устройстве.
+          x-assumption: A-05. Перечень допустимых алгоритмов не задан в источниках — строка без enum.
     Wallet:
       type: object
-      description: Кошелёк (счёт цифрового рубля) клиента.
-      required: [id, ownerType, status, walletNumberMasked, balance, openedAt]
+      description: Открытый кошелёк цифрового рубля (AC-16, FR-OPEN-13). Содержит банковскую тайну (C2).
+      required: [walletId, ownerType, status, walletNumberMasked, balance, openedAt]
       properties:
-        id:
+        walletId:
           type: string
           format: uuid
           readOnly: true
@@ -1047,36 +1081,27 @@ components:
           description: |
             Статус кошелька (business-rules §8.2): `ACTIVE` — действует; `BLOCKED_BY_CLIENT` —
             заблокирован клиентом; `RESTRICTED` — действуют ограничения; `CLOSING` — закрывается;
-            `CLOSED` — закрыт. Сразу после открытия — `ACTIVE`.
+            `CLOSED` — закрыт. Сразу после открытия — `ACTIVE` (AC-16).
           enum: [ACTIVE, BLOCKED_BY_CLIENT, RESTRICTED, CLOSING, CLOSED]
         walletNumberMasked:
           type: string
           readOnly: true
-          pattern: '^\*{4} [0-9A-Za-z]{4}$'
-          description: Номер счёта цифрового рубля, маскированный (видны последние 4 символа).
-          x-sensitivity:
-            level: C2
-            category: BANK_SECRECY
-            masking: MASK-WALLET
-          x-assumption: Формат номера счёта цифрового рубля не подтверждён (sensitive-data §11, вопрос 1).
+          description: Номер счёта цифрового рубля, видны последние 4 символа (MASK-WALLET).
+          x-sensitivity: { level: C2, category: BANK_SECRECY, masking: MASK-WALLET, log: MASK-WALLET }
+          x-assumption: A-05. Формат номера счёта цифрового рубля не задан (sensitive-data §11) — без pattern.
         balance:
           allOf:
             - $ref: '#/components/schemas/Money'
-          readOnly: true
-          description: Баланс кошелька по данным платформы ЦР.
-          x-sensitivity:
-            level: C2
-            category: BANK_SECRECY
-            masking: MASK-NONE
-            log: MASK-HIDE
+          description: Баланс кошелька по данным платформы (FR-GEN-05); после открытия — 0.00 RUB (AC-16).
+          x-sensitivity: { level: C2, category: BANK_SECRECY, masking: MASK-NONE, log: MASK-HIDE }
         openedAt:
           type: string
           format: date-time
           readOnly: true
-          description: Дата и время открытия кошелька.
+          description: Дата и время открытия кошелька на платформе.
     Money:
       type: object
-      description: Денежная сумма.
+      description: Денежная сумма (OAS-TYPE-04).
       required: [value, currency]
       properties:
         value:
@@ -1089,7 +1114,7 @@ components:
           description: Код валюты по ISO 4217.
     Problem:
       type: object
-      description: Описание ошибки по RFC 9457.
+      description: Ошибка в формате RFC 9457 (OAS-ERR-02).
       required: [type, title, status, code]
       properties:
         type:
@@ -1098,22 +1123,22 @@ components:
           description: URI типа ошибки.
         title:
           type: string
-          description: Краткое описание типа ошибки.
+          description: Краткое техническое описание типа ошибки; текст для клиента формирует приложение по `code` (NFR-CMP-03).
         status:
           type: integer
           description: HTTP-код ответа.
         detail:
           type: string
-          description: Пояснение без ПДн и без сведений о мерах ПОД/ФТ.
+          description: Пояснение без ПДн, значений полей запроса и сведений о мерах ПОД/ФТ (SD-API-07).
         instance:
           type: string
           description: Идентификатор конкретного случая ошибки.
         code:
           type: string
-          description: Бизнес-код ошибки из каталога (business-rules §9).
+          description: Бизнес-код ошибки из каталога business-rules §9.
         traceId:
           type: string
-          description: Идентификатор для поиска в журналах.
+          description: Идентификатор для поиска в журналах (NFR-OBS-02).
         errors:
           type: array
           description: Ошибки валидации полей (только для 400).
@@ -1130,244 +1155,158 @@ components:
               message:
                 type: string
                 description: Пояснение.
-    ClientNotEligibleProblem:
-      description: Ошибка `CLIENT_NOT_ELIGIBLE` с причиной несоответствия требованиям (AC-01b, AC-02).
+    WalletApplicationProblem:
+      description: Ошибка создания заявки с дополнительными полями, которых требуют AC-01b, AC-03, AC-04.
       allOf:
         - $ref: '#/components/schemas/Problem'
         - type: object
-          required: [reason]
-          properties:
-            reason:
-              type: string
-              description: |
-                Причина: `AGE` — клиент младше 18 лет; `CITIZENSHIP` — клиент не гражданин РФ;
-                `NOT_SOLE_PROPRIETOR` — запрошен кошелёк ИП, но клиент не зарегистрирован в банке как ИП.
-              enum: [AGE, CITIZENSHIP, NOT_SOLE_PROPRIETOR]
-    WalletAlreadyExistsProblem:
-      description: Ошибка `WALLET_ALREADY_EXISTS` с типом уже открытого кошелька (AC-03).
-      allOf:
-        - $ref: '#/components/schemas/Problem'
-        - type: object
-          required: [ownerType]
           properties:
             ownerType:
-              $ref: '#/components/schemas/OwnerType'
-    ApplicationInProgressProblem:
-      description: Ошибка `APPLICATION_IN_PROGRESS` с идентификатором незавершённой заявки (AC-04).
-      allOf:
-        - $ref: '#/components/schemas/Problem'
-        - type: object
-          required: [applicationId]
-          properties:
+              allOf:
+                - $ref: '#/components/schemas/OwnerType'
+              description: Тип уже открытого кошелька; только при `WALLET_ALREADY_EXISTS` (AC-03).
             applicationId:
               type: string
               format: uuid
-              description: Идентификатор существующей незавершённой заявки того же типа.
+              description: Идентификатор существующей незавершённой заявки; только при `APPLICATION_IN_PROGRESS` (AC-04).
+            reason:
+              type: string
+              description: |
+                Причина несоответствия требованиям; только при `CLIENT_NOT_ELIGIBLE`:
+                `AGE` — младше 18 лет, `CITIZENSHIP` — не гражданин РФ (AC-02, BR-DR-OPEN-01),
+                `NOT_SOLE_PROPRIETOR` — не зарегистрирован в банке как ИП (AC-01b, BR-DR-OPEN-15).
+              enum: [AGE, CITIZENSHIP, NOT_SOLE_PROPRIETOR]
+  examples:
+    IdempotencyKeyReused:
+      summary: Ключ идемпотентности использован с другим телом (BR-IDM-02)
+      value:
+        type: https://api.bank.example/problems/idempotency-key-reused
+        title: Idempotency key reused
+        status: 422
+        code: IDEMPOTENCY_KEY_REUSED
+        traceId: 0af7651916cd43dd8448eb211c8031b0
+    InvalidApplicationState:
+      summary: Шаг вызван не в своём статусе заявки (§8.1)
+      value:
+        type: https://api.bank.example/problems/invalid-application-state
+        title: Invalid application state
+        status: 409
+        code: INVALID_APPLICATION_STATE
+        traceId: 0af7651916cd43dd8448eb211c8031b1
   responses:
     BadRequest:
-      description: Некорректный запрос (`VALIDATION_ERROR`).
-      headers:
-        X-Request-Id:
-          $ref: '#/components/headers/XRequestId'
+      description: Некорректный запрос — `VALIDATION_ERROR`.
       content:
         application/problem+json:
           schema:
             $ref: '#/components/schemas/Problem'
-          examples:
-            validationError:
-              summary: Ошибка валидации
-              value:
-                type: https://api.bank.example/problems/validation-error
-                title: Некорректный запрос
-                status: 400
-                code: VALIDATION_ERROR
-                traceId: 0af7651916cd43dd8448eb211c80319c
-                errors:
-                  - field: ownerType
-                    code: INVALID_ENUM_VALUE
-                    message: Недопустимое значение
+          example:
+            type: https://api.bank.example/problems/validation-error
+            title: Validation error
+            status: 400
+            code: VALIDATION_ERROR
+            traceId: 0af7651916cd43dd8448eb211c8031b2
+            errors:
+              - field: ownerType
+                code: INVALID_VALUE
+                message: Недопустимое значение.
     Unauthorized:
-      description: Требуется аутентификация (`UNAUTHORIZED`).
-      headers:
-        X-Request-Id:
-          $ref: '#/components/headers/XRequestId'
+      description: Требуется аутентификация — `UNAUTHORIZED` (BR-GEN-01).
       content:
         application/problem+json:
           schema:
             $ref: '#/components/schemas/Problem'
-          examples:
-            unauthorized:
-              summary: Токен отсутствует или недействителен
-              value:
-                type: https://api.bank.example/problems/unauthorized
-                title: Требуется аутентификация
-                status: 401
-                code: UNAUTHORIZED
-                traceId: 0af7651916cd43dd8448eb211c80319c
-    Forbidden:
-      description: |
-        Операция недоступна клиенту. Возможные `code`:
-        - `IDENTIFICATION_REQUIRED` — недостаточный уровень идентификации в банке (BR-GEN-03);
-        - `CLIENT_BLOCKED` — клиент заблокирован в банке (BR-GEN-04).
-      headers:
-        X-Request-Id:
-          $ref: '#/components/headers/XRequestId'
-      content:
-        application/problem+json:
-          schema:
-            $ref: '#/components/schemas/Problem'
-          examples:
-            identificationRequired:
-              summary: Требуется идентификация
-              value:
-                type: https://api.bank.example/problems/identification-required
-                title: Требуется идентификация в банке
-                status: 403
-                code: IDENTIFICATION_REQUIRED
-                traceId: 0af7651916cd43dd8448eb211c80319c
-            clientBlocked:
-              summary: Клиент заблокирован
-              value:
-                type: https://api.bank.example/problems/client-blocked
-                title: Операция недоступна
-                status: 403
-                code: CLIENT_BLOCKED
-                traceId: 0af7651916cd43dd8448eb211c80319c
+          example:
+            type: https://api.bank.example/problems/unauthorized
+            title: Unauthorized
+            status: 401
+            code: UNAUTHORIZED
+            traceId: 0af7651916cd43dd8448eb211c8031b3
     NotFound:
-      description: Ресурс не найден или принадлежит другому клиенту (`RESOURCE_NOT_FOUND`, AC-18).
-      headers:
-        X-Request-Id:
-          $ref: '#/components/headers/XRequestId'
+      description: Ресурс не найден или принадлежит другому клиенту — `RESOURCE_NOT_FOUND` (AC-18, BR-GEN-02, OAS-ERR-07).
       content:
         application/problem+json:
           schema:
             $ref: '#/components/schemas/Problem'
-          examples:
-            notFound:
-              summary: Ресурс не найден
-              value:
-                type: https://api.bank.example/problems/resource-not-found
-                title: Ресурс не найден
-                status: 404
-                code: RESOURCE_NOT_FOUND
-                traceId: 0af7651916cd43dd8448eb211c80319c
+          example:
+            type: https://api.bank.example/problems/resource-not-found
+            title: Resource not found
+            status: 404
+            code: RESOURCE_NOT_FOUND
+            traceId: 0af7651916cd43dd8448eb211c8031b4
     InvalidApplicationState:
-      description: |
-        Конфликт состояния. Возможные `code`:
-        - `INVALID_APPLICATION_STATE` — шаг недопустим для текущего статуса заявки (в том числе для финального статуса, AC-19).
-      headers:
-        X-Request-Id:
-          $ref: '#/components/headers/XRequestId'
+      description: Шаг недопустим для текущего статуса заявки (в т. ч. `EXPIRED`) — `INVALID_APPLICATION_STATE` (§8.1, AC-19).
       content:
         application/problem+json:
           schema:
             $ref: '#/components/schemas/Problem'
           examples:
-            invalidState:
-              summary: Недопустимый шаг для статуса заявки
-              value:
-                type: https://api.bank.example/problems/invalid-application-state
-                title: Недопустимое действие для текущего статуса заявки
-                status: 409
-                code: INVALID_APPLICATION_STATE
-                traceId: 0af7651916cd43dd8448eb211c80319c
+            invalidApplicationState:
+              $ref: '#/components/examples/InvalidApplicationState'
     IdempotencyKeyReused:
-      description: |
-        Нарушено бизнес-правило. Возможные `code`:
-        - `IDEMPOTENCY_KEY_REUSED` — повтор с тем же ключом идемпотентности, но с другим телом запроса (BR-IDM-02).
-      headers:
-        X-Request-Id:
-          $ref: '#/components/headers/XRequestId'
+      description: Ключ идемпотентности уже использован с другим телом запроса — `IDEMPOTENCY_KEY_REUSED` (BR-IDM-02).
       content:
         application/problem+json:
           schema:
             $ref: '#/components/schemas/Problem'
           examples:
             idempotencyKeyReused:
-              summary: Ключ идемпотентности использован с другим телом
-              value:
-                type: https://api.bank.example/problems/idempotency-key-reused
-                title: Ключ идемпотентности уже использован
-                status: 422
-                code: IDEMPOTENCY_KEY_REUSED
-                traceId: 0af7651916cd43dd8448eb211c80319c
+              $ref: '#/components/examples/IdempotencyKeyReused'
     TooManyRequests:
-      description: Превышен лимит частоты запросов (`TOO_MANY_REQUESTS`).
+      description: Превышен лимит частоты запросов — `TOO_MANY_REQUESTS` (NFR-RATE-01, NFR-RATE-03).
       headers:
         Retry-After:
           $ref: '#/components/headers/RetryAfter'
-        X-Request-Id:
-          $ref: '#/components/headers/XRequestId'
       content:
         application/problem+json:
           schema:
             $ref: '#/components/schemas/Problem'
-          examples:
-            tooManyRequests:
-              summary: Слишком много запросов
-              value:
-                type: https://api.bank.example/problems/too-many-requests
-                title: Слишком много запросов
-                status: 429
-                code: TOO_MANY_REQUESTS
-                traceId: 0af7651916cd43dd8448eb211c80319c
+          example:
+            type: https://api.bank.example/problems/too-many-requests
+            title: Too many requests
+            status: 429
+            code: TOO_MANY_REQUESTS
+            traceId: 0af7651916cd43dd8448eb211c8031b5
     InternalServerError:
-      description: Внутренняя ошибка сервера (`INTERNAL_ERROR`).
-      headers:
-        X-Request-Id:
-          $ref: '#/components/headers/XRequestId'
+      description: Внутренняя ошибка сервера — `INTERNAL_ERROR`.
       content:
         application/problem+json:
           schema:
             $ref: '#/components/schemas/Problem'
-          examples:
-            internalError:
-              summary: Внутренняя ошибка
-              value:
-                type: https://api.bank.example/problems/internal-error
-                title: Внутренняя ошибка
-                status: 500
-                code: INTERNAL_ERROR
-                traceId: 0af7651916cd43dd8448eb211c80319c
-    ServiceUnavailable:
+          example:
+            type: https://api.bank.example/problems/internal-error
+            title: Internal error
+            status: 500
+            code: INTERNAL_ERROR
+            traceId: 0af7651916cd43dd8448eb211c8031b6
+    PlatformUnavailable:
       description: |
-        Внешняя система временно недоступна, статус заявки не изменён; повторите запрос позже (AC-17).
-        Возможные `code`:
-        - `PLATFORM_UNAVAILABLE` — недоступна платформа ЦР или Госуслуги;
-        - `CORE_BANKING_UNAVAILABLE` — недоступна АБС.
+        Платформа цифрового рубля недоступна, повторы `RP-EXP` исчерпаны — `PLATFORM_UNAVAILABLE`.
+        Статус заявки не меняется; повторить позже (AC-17, E1).
       headers:
         Retry-After:
           $ref: '#/components/headers/RetryAfter'
-        X-Request-Id:
-          $ref: '#/components/headers/XRequestId'
       content:
         application/problem+json:
           schema:
             $ref: '#/components/schemas/Problem'
-          examples:
-            platformUnavailable:
-              summary: Платформа ЦР недоступна
-              value:
-                type: https://api.bank.example/problems/platform-unavailable
-                title: Сервис временно недоступен
-                status: 503
-                code: PLATFORM_UNAVAILABLE
-                traceId: 0af7651916cd43dd8448eb211c80319c
+          example:
+            type: https://api.bank.example/problems/platform-unavailable
+            title: Platform unavailable
+            status: 503
+            code: PLATFORM_UNAVAILABLE
+            traceId: 0af7651916cd43dd8448eb211c8031b7
     GatewayTimeout:
-      description: Внешняя система не ответила вовремя (`UPSTREAM_TIMEOUT`); статус заявки не изменён, повторите запрос позже (AC-17).
-      headers:
-        X-Request-Id:
-          $ref: '#/components/headers/XRequestId'
+      description: |
+        Внешняя система не ответила за отведённое время, повторы исчерпаны — `UPSTREAM_TIMEOUT`.
+        Статус ресурса не меняется; запрос можно повторить с тем же `Idempotency-Key` (E1, BR-IDM-03).
       content:
         application/problem+json:
           schema:
             $ref: '#/components/schemas/Problem'
-          examples:
-            upstreamTimeout:
-              summary: Таймаут внешней системы
-              value:
-                type: https://api.bank.example/problems/upstream-timeout
-                title: Внешняя система не ответила вовремя
-                status: 504
-                code: UPSTREAM_TIMEOUT
-                traceId: 0af7651916cd43dd8448eb211c80319c
+          example:
+            type: https://api.bank.example/problems/upstream-timeout
+            title: Upstream timeout
+            status: 504
+            code: UPSTREAM_TIMEOUT
+            traceId: 0af7651916cd43dd8448eb211c8031b8

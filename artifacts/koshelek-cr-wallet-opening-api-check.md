@@ -5,32 +5,22 @@
 | OAS | `artifacts/koshelek-cr-wallet-opening-api.yaml` (OpenAPI 3.0.3, API 1.0.0) |
 | Sequence-диаграмма | `artifacts/koshelek-cr-wallet-opening-sequence.puml` |
 | Task | SCRUM-2194 «КошелёкЦР - открытие кошелька цифрового рубля» |
-| Story | SCRUM-2196 (связь *relates to*, единственная) |
+| Story | SCRUM-2196 (связь *relates to*) — единственная связанная история |
 | Продукт / контекст | `knowledge/context/koshelek-cr/` |
-| Подготовлено | Агентом (skill `oas-from-jira`): OAS — 2026-11-19, диаграмма и исправление OAS — 2026-11-23. Черновик для проверки человеком. |
-
-## 0. Изменения OAS в этой версии
-
-Диаграмма строилась по OAS из `main`. При трассировке шага 10 обнаружилось, что описание `submitCertificateRequest` противоречит источникам: в OAS антифрод был асинхронным и шёл **после** передачи запроса на платформу. Task же (таблица «Внешние системы») требует синхронный антифрод, а последовательность в `integrations.md` задаёт порядок «антифрод → платформа → 202». По SKILL.md сначала исправляется OAS, потом рисуется диаграмма.
-
-Что изменено в YAML (путь, схемы и коды ответов не менялись):
-- `submitCertificateRequest.description`: синхронно, до ответа 202, — АБС (для ИП), затем антифрод (таймаут 500 мс; при таймауте результат считается `REVIEW`), затем при `ALLOW` передача запроса на платформу. Асинхронно — только результат платформы.
-- Ответ `202` содержит заявку в статусе по решению антифрода: `PROCESSING`, `ON_REVIEW` или `REJECTED (OPERATION_DECLINED_BY_SECURITY)`. Добавлены примеры `onReview` и `rejectedSecurity`.
-- `getWalletApplication.description`: переход `PROCESSING → ON_REVIEW` (теперь он происходит внутри `submitCertificateRequest`) заменён на `ON_REVIEW → PROCESSING` (ручная проверка пройдена).
-- `x-assumption` операции и A-04 в `info.description` приведены к новому порядку.
+| Подготовлено | Агентом (skill `oas-from-jira`), 2026-11-23. Черновик для проверки человеком. Артефакты подготовлены заново по текущим описаниям задач в Jira, а не правкой предыдущей версии. |
 
 ## 1. Источники
 
 | Источник | Как использован |
 |---|---|
-| SCRUM-2194 (Jira, Atlassian MCP; перечитана 2026-11-23, без изменений) | Акторы, границы, сценарий `[UI]` / `[API]` / `[EXT]`, альтернативы A1–A10, E1, внешние системы, НФТ |
-| SCRUM-2196 (Jira, Atlassian MCP; без изменений) | AC-01…AC-19, подтверждённые решения |
-| `knowledge/context/koshelek-cr/functional-requirements.md` | FR-GEN-*, FR-OPEN-01…13 |
-| `knowledge/context/koshelek-cr/non-functional-requirements.md` | NFR-PERF-01…03, NFR-AV-02…04, NFR-RATE-01, 03, NFR-RET-01, NFR-OBS-01, 02 |
-| `knowledge/context/koshelek-cr/integrations.md` | INT-ABS-01, INT-ESIA-01/02, INT-DRP-01…04, 08, INT-AF-01, 03; таймауты, политика повтора, таблицы соответствия ошибок, последовательность «Открытие кошелька» |
-| `knowledge/business-rules.md` | BR-* из Task, статусные модели §8.1, §8.2, каталог кодов §9 |
-| `knowledge/sensitive-data.md` | §3, §4 (MASK-WALLET), §5 (SD-API-*), §9 |
-| `knowledge/oas-conventions.md` | Оформление OAS |
+| SCRUM-2194 (Jira, Task) | Акторы, границы («Входит» / «Не входит»), предусловия, основной сценарий (шаги 1–13 с разметкой `[UI]` / `[API]` / `[EXT]`), альтернативы A1–A10, исключения E1–E4, внешние системы, ключевые данные, перечень бизнес-правил, особенности НФТ, подтверждённые решения |
+| SCRUM-2196 (Jira, Story) | AC-01, AC-01a, AC-01b, AC-02 … AC-21; подтверждённые решения (срок заявки 24 ч, пароль на устройстве, ИП в том же приложении) |
+| `knowledge/context/koshelek-cr/functional-requirements.md` | FR-GEN-01…06, FR-OPEN-01…13 |
+| `knowledge/context/koshelek-cr/non-functional-requirements.md` | NFR-PERF-01, 02, 03, 05; NFR-AV-02, 03, 04, 05; NFR-RATE-01, 03; NFR-SEC-01, 03, 04; NFR-RET-01; NFR-OBS-01, 02; NFR-CMP-01, 02, 03 |
+| `knowledge/context/koshelek-cr/integrations.md` | Политика повтора `RP-EXP`, таймауты; INT-ABS-01, INT-ESIA-01, 02, INT-DRP-01, 02, 03, 04, 08, INT-AF-01, 03; таблицы соответствия ошибок |
+| `knowledge/business-rules.md` | §1.1, §1.4 (BR-IDM-01…03), §1.5, §2 (BR-AF-01…03, 06, BR-AML-01), §3 (BR-DR-OPEN-01…15), §8.1, §8.2, §9 |
+| `knowledge/sensitive-data.md` | §3 (каталог полей), §4 (MASK-WALLET, MASK-HASH), §5 (SD-API-01…07, 10, 13…16), §9 (нотация `x-sensitivity`) |
+| `knowledge/oas-conventions.md` | Полностью: структура, именование, заголовки, ошибки, асинхронность, расширения, скелет |
 
 ## 2. Результаты проверок
 
@@ -38,64 +28,66 @@
 
 ```
 npx @stoplight/spectral-cli@6 lint artifacts/koshelek-cr-wallet-opening-api.yaml --ruleset .spectral.yaml
-Spectral 6.17.1 — 0 errors, 0 warnings
+Spectral 6.17.1: No results with a severity of 'hint' or higher found!
+0 ошибок, 0 предупреждений
 ```
 
-`.spectral.yaml` не менялся. В первой версии (2026-11-19) была исправлена одна ошибка `oas3-valid-media-example`: в ответе 422 `createWalletApplication` `oneOf` заменён на `anyOf`.
+Ошибок и предупреждений не было ни на первом прогоне, ни после доработки (добавлено допущение A-06).
 
 ### 2.2 PlantUML
 
 ```
-java -jar plantuml-1.2024.7.jar -checkonly artifacts/koshelek-cr-wallet-opening-sequence.puml
-код возврата 0
+java -jar plantuml.jar -checkonly artifacts/koshelek-cr-wallet-opening-sequence.puml
+PlantUML 1.2024.8 (jar из Maven Central), код возврата 0
 ```
 
-- Рендер просмотрен (PNG 1896 × 7280 px): подписи читаются, пустых веток нет. Высота больше лимита PNG по умолчанию (4096 px), поэтому рендер запускался с `-DPLANTUML_LIMIT_SIZE=16384`; в начале файла есть комментарий об этом.
-- Сверка бизнес-кодов OAS ↔ диаграмма: пустой вывод.
-- Статусы из OAS в метках `[S]`: все 11 (`CREATED`, `ESIA_PENDING`, `CONTRACT_PENDING`, `KEYS_PENDING`, `PROCESSING`, `ON_REVIEW`, `COMPLETED`, `REJECTED`, `CANCELLED`, `EXPIRED`, `FAILED`).
-- Все 6 значений `rejectReason` есть в ветках `REJECTED`.
-- Операции OAS на диаграмме: все 8.
+- Рендер просмотрен: да (`-DPLANTUML_LIMIT_SIZE=16384`, PNG 1680 × ~8200 px, просмотрен частями). Подписи не обрезаны, пустых веток нет. Сообщения пронумерованы `[01]`–`[94]`.
+- Сверка бизнес-кодов OAS ↔ диаграмма (команда из SKILL.md, шаг 9): пустой вывод.
+- Статусы из OAS в метках `[S]`: все 11 значений `WalletApplicationStatus` (`CREATED`, `ESIA_PENDING`, `CONTRACT_PENDING`, `KEYS_PENDING`, `PROCESSING`, `ON_REVIEW`, `COMPLETED`, `REJECTED`, `CANCELLED`, `EXPIRED`, `FAILED`). Каждое значение `rejectReason` — в ветке `REJECTED`.
+- Операции OAS на диаграмме: все 8, с тем же методом, путём и `operationId`.
 
 ## 3. Операции
 
 | # | Метод и путь | operationId | Шаг Task | Сообщения на диаграмме |
 |---|---|---|---|---|
-| 1 | `POST /wallet-applications` | `createWalletApplication` | 2 | `[02]`–`[14]` |
-| 2 | `GET /wallet-applications/{applicationId}` | `getWalletApplication` | 11 | `[35]`–`[38]`, `[90]`–`[93]` |
-| 3 | `POST /wallet-applications/{applicationId}/esia-authorization` | `createEsiaAuthorization` | 3 | `[15]`–`[24]` |
-| 4 | `GET /wallet-applications/{applicationId}/contract` | `getWalletApplicationContract` | 6 | `[39]`–`[47]` |
-| 5 | `POST /wallet-applications/{applicationId}/contract-acceptance` | `acceptWalletApplicationContract` | 8 | `[49]`–`[58]` |
-| 6 | `POST /wallet-applications/{applicationId}/certificate-requests` | `submitCertificateRequest` | 10 | `[60]`–`[79]` |
-| 7 | `POST /wallet-applications/{applicationId}/cancel` | `cancelWalletApplication` | A6 / AC-12 | `[102]`–`[105]` |
-| 8 | `GET /wallets/{walletId}` | `getWallet` | 13 | `[95]`–`[101]` |
+| 1 | `POST /wallet-applications` | `createWalletApplication` | 2 | `[02]`–`[16]` |
+| 2 | `POST /wallet-applications/{applicationId}/esia-authorization` | `startEsiaAuthorization` | 3 | `[17]`–`[25]` |
+| 3 | `GET /wallet-applications/{applicationId}/contract` | `getWalletApplicationContract` | 6 | `[32]`–`[39]` |
+| 4 | `POST /wallet-applications/{applicationId}/contract-acceptance` | `acceptWalletApplicationContract` | 8 | `[41]`–`[48]` |
+| 5 | `POST /wallet-applications/{applicationId}/certificate-requests` | `submitCertificateRequest` | 10 | `[50]`–`[72]` |
+| 6 | `GET /wallet-applications/{applicationId}` | `getWalletApplication` | 11 | `[77]`–`[80]` |
+| 7 | `GET /wallets/{walletId}` | `getWallet` | 13 | `[82]`–`[87]` |
+| 8 | `POST /wallet-applications/{applicationId}/cancel` | `cancelWalletApplication` | A6 (отказ клиента) | `[88]`–`[94]` |
 
-Шаги `[UI]` 1, 4, 7, 9, 12 операций OAS не дают; на диаграмме они показаны сообщениями без вызова модуля (`[01]`, `[25]`–`[26]`, `[48]`, `[59]`, `[94]`). Шаг 5 выполняет сервер, он показан служебным вызовом `[30]`–`[34]`.
+Шаги `[UI]` 1, 4, 7, 9, 12 операций не дают (на диаграмме — сообщения клиента `[01]`, `[26]`, `[40]`, `[49]`, `[81]`). Шаг 5 и асинхронные результаты — служебные сообщения без клиентских операций.
 
 ## 4. Матрица покрытия AC
 
 | AC | Элемент OAS | Элемент диаграммы | Покрыт |
 |---|---|---|---|
-| AC-01 | `createWalletApplication` → 201, `WalletApplication` (`id`, `ownerType`, `CREATED`, `expiresAt`) | Шаг 2, `[14]` | Да |
-| AC-01a | то же, `ownerType=SOLE_PROPRIETOR`; кошелёк другого типа не мешает | Шаг 2, `[14]` | Да |
-| AC-01b | 422 `CLIENT_NOT_ELIGIBLE`, `reason=NOT_SOLE_PROPRIETOR` | `[11]` | Да |
-| AC-02 | 422 `CLIENT_NOT_ELIGIBLE`, `reason=AGE` / `CITIZENSHIP` | `[10]` | Да |
-| AC-03 | 409 `WALLET_ALREADY_EXISTS` + `ownerType` | `[12]` | Да |
-| AC-04 | 409 `APPLICATION_IN_PROGRESS` + `applicationId` | `[13]` | Да |
-| AC-05 | `Idempotency-Key`; повтор → 201 та же заявка; другое тело → 422 `IDEMPOTENCY_KEY_REUSED` | `[04]`, `[05]` | Да |
-| AC-06 | `createEsiaAuthorization` → 200 `authorizationUrl`, `ESIA_PENDING` | `[19]`, `[23]`–`[24]` | Да |
-| AC-07 | `getWalletApplication`: `REJECTED` (`ESIA_CONSENT_DENIED` / `ESIA_ACCOUNT_NOT_CONFIRMED`) | `[27]`–`[29]`, `[38]` | Да |
-| AC-08 | `getWalletApplication`: `REJECTED (WALLET_ALREADY_EXISTS)` | `[30]`–`[32]`, `[38]` | Да |
-| AC-09 | `getWalletApplicationContract` → 200 `WalletContract` | `[42]`, `[46]`–`[47]` | Да |
-| AC-10 | `acceptWalletApplicationContract` → 200, `KEYS_PENDING`, `acceptedContractVersion`, `contractAcceptedAt` | `[57]`–`[58]` | Да |
-| AC-11 | 409 `CONTRACT_VERSION_OUTDATED` | `[55]`–`[56]` | Да |
-| AC-12 | `cancelWalletApplication` → 200 `CANCELLED`; 409 после передачи CSR | `[102]`–`[105]` | Да |
-| AC-13 | `submitCertificateRequest` → 202 + `Location`, `PROCESSING`; только `csr` (`writeOnly`) и `keyAlgorithm` | `[59]`–`[60]`, `[73]`–`[79]` | Да |
-| AC-14 | 202 с `ON_REVIEW` / `REJECTED (OPERATION_DECLINED_BY_SECURITY)`; дальнейшие переходы — `getWalletApplication` | `[68]`–`[72]`, `[80]`–`[83]` | Да |
-| AC-15 | `getWalletApplication`: `COMPLETED`, `walletId`; сведения об ИП передаются на платформу (внутренний вызов) | `[64]`–`[65]`, `[74]`, `[85]`–`[86]`, `[93]` | Да |
-| AC-16 | `getWallet` → 200 `Wallet` (`ACTIVE`, `walletNumberMasked`, `balance` 0.00 RUB, `openedAt`), `no-store` | `[97]`, `[100]`–`[101]` | Да |
-| AC-17 | 503 / 504 у операций с внешними вызовами; статус заявки не меняется | `[08]`, `[21]`, `[44]`, `[54]`, `[66]`, `[76]`, `[99]` | Да |
-| AC-18 | 404 `RESOURCE_NOT_FOUND` у операций с `applicationId` | `[16]`, `[37]`, `[40]`, `[50]`, `[61]`, `[92]`, `[103]` | Да |
-| AC-19 | `expiresAt`, `EXPIRED`; дальнейшие шаги → 409 `INVALID_APPLICATION_STATE` | `[106]`, `[17]` | Да |
+| AC-01 | `createWalletApplication` → `201`, `WalletApplication` (`applicationId`, `ownerType`, `expiresAt`), `status: CREATED` | Шаг 2, ветка «успех», `[16]` | Да |
+| AC-01a | `createWalletApplication` → `201`, `ownerType: SOLE_PROPRIETOR`; проверка дублей по типу | `[16]` (подпись «кошелёк другого типа не мешает») | Да |
+| AC-01b | `createWalletApplication` → `422 CLIENT_NOT_ELIGIBLE`, `reason: NOT_SOLE_PROPRIETOR` | `[13]` | Да |
+| AC-02 | `createWalletApplication` → `422 CLIENT_NOT_ELIGIBLE`, `reason: AGE / CITIZENSHIP` | `[12]` | Да |
+| AC-03 | `createWalletApplication` → `409 WALLET_ALREADY_EXISTS` + `ownerType` (`WalletApplicationProblem`) | `[14]` | Да |
+| AC-04 | `createWalletApplication` → `409 APPLICATION_IN_PROGRESS` + `applicationId` | `[15]` | Да |
+| AC-05 | `IdempotencyKey`, `201` при повторе с тем же ключом и телом | `[05]` | Да |
+| AC-06 | `startEsiaAuthorization` → `200 EsiaAuthorization.authorizationUrl`, `status: ESIA_PENDING` | `[25]` | Да |
+| AC-07 | `getWalletApplication` → `REJECTED`, `rejectReason: ESIA_CONSENT_DENIED / ESIA_ACCOUNT_NOT_CONFIRMED` | Шаг 4, ветки после `[27]` и `[29]` | Да |
+| AC-08 | `getWalletApplication` → `REJECTED`, `rejectReason: WALLET_ALREADY_EXISTS` | Шаг 5, ветка после `[31]` | Да |
+| AC-09 | `getWalletApplicationContract` → `200 WalletContract` | `[39]` | Да |
+| AC-10 | `acceptWalletApplicationContract` → `200`, `status: KEYS_PENDING`; фиксация версии и времени — в `description` | `[46]` | Да (факт фиксации — серверный, в ответ не выводится) |
+| AC-11 | `acceptWalletApplicationContract` → `409 CONTRACT_VERSION_OUTDATED` | `[45]` | Да |
+| AC-12 | `cancelWalletApplication` → `200`, `status: CANCELLED` | `[92]` | Да |
+| AC-13 | `submitCertificateRequest` → `202`, `Location`, `status: PROCESSING`; `csr` `writeOnly`, закрытого ключа нет | `[65]`, `[68]`, `[70]`; note к шагу 9 | Да |
+| AC-14 | `submitCertificateRequest` → `202` с `ON_REVIEW` / `REJECTED` (`OPERATION_DECLINED_BY_SECURITY`); `getWalletApplication` — переходы из `ON_REVIEW` | `[61]`, `[62]`, `[73]` и ветки после него | Да (см. допущение A-03) |
+| AC-15 | `getWalletApplication` → `COMPLETED`, `walletId` | Асинхронная обработка, ветка «счёт открыт» после `[74]`; `[80]` | Да |
+| AC-16 | `getWallet` → `200 Wallet` (`ownerType`, `status: ACTIVE`, `walletNumberMasked`, `balance` 0.00 RUB, `openedAt`) | `[87]` | Да |
+| AC-17 | `503 ESIA_UNAVAILABLE` (`startEsiaAuthorization`), `503 PLATFORM_UNAVAILABLE` (`getWalletApplicationContract`, `submitCertificateRequest`, `getWallet`), `Retry-After`, `504 UPSTREAM_TIMEOUT` | `[23]`, `[37]`, `[71]`, `[72]`, `[86]` | Да |
+| AC-18 | `404 RESOURCE_NOT_FOUND` у всех операций с `applicationId` | `[18]`, `[33]`, `[42]`, `[51]`, `[79]`, `[89]` | Да |
+| AC-19 | `expiresAt`, статус `EXPIRED`; `409 INVALID_APPLICATION_STATE` для шагов по истёкшей заявке | Раздел «Истечение срока заявки»; `[19]`, `[34]`, `[44]`, `[53]`, `[91]` | Да |
+| AC-20 | `Idempotency-Key` у `acceptWalletApplicationContract` и `cancelWalletApplication`; повтор → сохранённый `200` | `[47]`–`[48]`, `[93]`–`[94]` | Да |
+| AC-21 | `submitCertificateRequest` → `503 SERVICE_UNAVAILABLE`, `Retry-After`; заявка в `KEYS_PENDING`; повтор — новая проверка (BR-IDM-03) | `[59]`, `[60]` | Да |
 
 ## 5. Трассировка элементов
 
@@ -103,134 +95,147 @@ java -jar plantuml-1.2024.7.jar -checkonly artifacts/koshelek-cr-wallet-opening-
 
 | Элемент OAS | Источник |
 |---|---|
-| `createWalletApplication` | Task шаг 2; AC-01…05; FR-OPEN-01, 02 |
-| ↳ 403 `IDENTIFICATION_REQUIRED` / `CLIENT_BLOCKED` | Task, предусловия (BR-GEN-03, 04); integrations: ошибки АБС |
-| ↳ 409, 422 | AC-01b, 02, 03, 04, 05; BR-IDM-02 |
-| ↳ 429 + `Retry-After` | NFR-RATE-01 |
-| ↳ 503 / 504 | INT-ABS-01; integrations: `CORE_BANKING_UNAVAILABLE` / `UPSTREAM_TIMEOUT`; AC-17 |
-| ↳ `Idempotency-Key`, 201 + `Location` | AC-05; BR-IDM-01; NFR-AV-04; OAS-HDR-04 |
-| `getWalletApplication` | Task шаг 11; AC-07, 08, 14, 15, 18, 19; NFR-PERF-03 |
-| ↳ 429 | NFR-RATE-03 |
-| `createEsiaAuthorization` | Task шаг 3; AC-06; INT-ESIA-01 |
-| ↳ `Idempotency-Key`, 422 | Task E1; BR-IDM-02 |
-| ↳ 503 / 504 | Task E1; integrations (ЕСИА → `PLATFORM_UNAVAILABLE`); AC-17 |
-| `getWalletApplicationContract` | Task шаг 6; AC-09; INT-DRP-02 |
-| `acceptWalletApplicationContract` | Task шаг 8; AC-10, 11; BR-DR-OPEN-07, 08, 09 |
-| ↳ 503 / 504 | Допущение A-03 |
-| `submitCertificateRequest` | Task шаг 10; AC-13…15; INT-ABS-01, INT-AF-01, INT-DRP-03 |
-| ↳ 202 + `Location`; статус по решению антифрода | NFR-PERF-02; OAS-ASYNC-01; Task (антифрод синхронно); AC-14 |
-| ↳ `Idempotency-Key`, 503 / 504 | Task E1; AC-17 |
-| `cancelWalletApplication` | AC-12; Task A6; business-rules §8.1 |
-| `getWallet` | Task шаг 13; AC-16; INT-DRP-04; SD-API-10 (`no-store`) |
-| 400 / 401 / 500 у всех операций | OAS-ERR-04 |
-| `X-Request-Id` | OAS-HDR-02; NFR-OBS-01 |
+| `createWalletApplication` | Шаг 2 `[API]`, FR-OPEN-01, 02; AC-01…05 |
+| — `201` + `Location` | AC-01, AC-01a; OAS-HDR-04 |
+| — `403 IDENTIFICATION_REQUIRED`, `CLIENT_BLOCKED` | Предусловия Task (BR-GEN-03, 04); таблица ошибок АБС в `integrations.md` |
+| — `409 WALLET_ALREADY_EXISTS`, `APPLICATION_IN_PROGRESS` | A2, A3; AC-03, AC-04; BR-DR-OPEN-04, 05; §8.1 |
+| — `422 CLIENT_NOT_ELIGIBLE`, `IDEMPOTENCY_KEY_REUSED` | A1, A1a; AC-01b, AC-02; BR-DR-OPEN-01, 15; BR-IDM-02 |
+| — `429` + `Retry-After` | NFR-RATE-01 |
+| — `503 CORE_BANKING_UNAVAILABLE` + `Retry-After`, `504 UPSTREAM_TIMEOUT` | Шаг 2 `[EXT:CORE_BANKING]`; `integrations.md` (АБС, политика повтора) |
+| `startEsiaAuthorization` | Шаг 3 `[API]`, FR-OPEN-03; AC-06; имя операции — из `integrations.md` и NFR-PERF-05 |
+| — `409 INVALID_APPLICATION_STATE` | §8.1 (шаг не в своём статусе); AC-19 |
+| — `503 ESIA_UNAVAILABLE`, `504 UPSTREAM_TIMEOUT` | E1; AC-17; `integrations.md` (ЕСИА) |
+| — повторный вызов в `ESIA_PENDING` | E2; `integrations.md` (ЕСИА: «повторный вызов в `ESIA_PENDING` возвращает новую ссылку») |
+| `getWalletApplicationContract` | Шаг 6 `[API]`, FR-OPEN-05; AC-09; `503 PLATFORM_UNAVAILABLE` / `504` — E1, AC-17 |
+| `acceptWalletApplicationContract` | Шаг 8 `[API]`, FR-OPEN-06; AC-10, AC-11, AC-20; `409 CONTRACT_VERSION_OUTDATED` — A7, `integrations.md` (платформа) |
+| `submitCertificateRequest` | Шаг 10 `[API]`, FR-OPEN-07…09; AC-13, AC-14, AC-21 |
+| — `202` + `Location` | NFR-PERF-02, OAS-ASYNC-01; AC-13 |
+| — `503 SERVICE_UNAVAILABLE` | E3; AC-21; BR-AF-06 |
+| — `503 PLATFORM_UNAVAILABLE`, `504` | E1; AC-17 |
+| — `503 CORE_BANKING_UNAVAILABLE`, `504` | Task: АБС на шаге 10; `integrations.md` (АБС); допущение A-02 |
+| `getWalletApplication` | Шаг 11 `[API]`, FR-OPEN-10; AC-07, 08, 14, 15, 18, 19; `429` — NFR-RATE-03; интервал опроса — NFR-PERF-03 |
+| `getWallet` | Шаг 13 `[API]`, FR-OPEN-13; AC-16; `503` / `504` — INT-DRP-04, FR-GEN-05 (см. противоречие 2) |
+| — `Cache-Control: no-store` | SD-API-10 (баланс и номер кошелька — C2) |
+| `cancelWalletApplication` | A6; AC-12, AC-20; FR-OPEN-11; §8.1 |
+| `Idempotency-Key` у всех 5 `POST` | BR-IDM-01, OAS-HDR-03, NFR-AV-04; правило Spectral `post-idempotency-key` |
+| `X-Request-Id` (запрос и ответы 2xx) | NFR-OBS-01, OAS-HDR-02 |
+| `404 RESOURCE_NOT_FOUND` | AC-18, BR-GEN-02, OAS-ERR-07 |
+| `400`, `401`, `500` | OAS-ERR-04 |
 
 ### 5.2 Схемы и поля
 
 | Элемент | Источник |
 |---|---|
-| `OwnerType` | Task, границы; BR-DR-OPEN-05 |
-| `WalletApplicationStatus` (11 значений) | business-rules §8.1 (OAS-TYPE-08) |
-| `WalletApplication.rejectReason` | AC-07, 08, 14; Task A9; integrations (ошибки платформы) |
-| `WalletApplication.walletId` | AC-15 |
-| `WalletApplication.acceptedContractVersion`, `contractAcceptedAt` | AC-10 |
-| `WalletApplication.expiresAt` | AC-01, AC-19; NFR-RET-01 |
-| `EsiaAuthorization` | AC-06 |
-| `WalletContract` | AC-09 |
-| `AcceptWalletContractRequest` (`accepted: enum [true]`) | AC-10; BR-DR-OPEN-07, 08 |
-| `SubmitCertificateRequestRequest` | Task, ключевые данные; AC-13; BR-DR-OPEN-10 |
-| `Wallet`, `Money` | AC-16; business-rules §8.2; OAS-TYPE-04 |
-| `Problem`, `ClientNotEligibleProblem`, `WalletAlreadyExistsProblem`, `ApplicationInProgressProblem` | OAS-ERR-01, 02; AC-01b, 02, 03, 04; BR-DR-OPEN-01 |
+| `OwnerType` (`INDIVIDUAL`, `SOLE_PROPRIETOR`) | Task, «Границы»; FR-GEN-04; BR-DR-OPEN-05 |
+| `WalletApplicationStatus` (11 значений) | §8.1; OAS-TYPE-08 (перечислять полностью) |
+| `CreateWalletApplicationRequest.ownerType` | Шаг 2; AC-01, AC-01a |
+| `WalletApplication.applicationId`, `ownerType`, `status`, `rejectReason`, `expiresAt`, `walletId`, `createdAt`, `updatedAt` | Task, «Ключевые данные: заявка»; AC-01, AC-07, AC-08, AC-14, AC-15, AC-19 |
+| `rejectReason` enum | AC-07, AC-08, AC-14; A9; `integrations.md` (платформа, антифрод); BR-DR-OPEN-14, BR-AML-01 |
+| `EsiaAuthorization` (`applicationId`, `status`, `authorizationUrl`) | AC-06, INT-ESIA-01 |
+| `WalletContract` (`contractId`, `contractVersion`, `documentUrl`, `platformRulesUrl`, `tariffsUrl`) | AC-09; Task, «Ключевые данные: договор»; BR-DR-OPEN-08 |
+| `AcceptWalletContractRequest` (`contractVersion`, `accepted: true`) | AC-10, шаг 8; BR-DR-OPEN-07, 08 |
+| `SubmitCertificateRequestRequest` (`csr`, `keyAlgorithm`) | Task, «Ключевые данные: запрос на сертификат»; AC-13; BR-DR-OPEN-10 |
+| `Wallet` (`walletId`, `ownerType`, `status`, `walletNumberMasked`, `balance`, `openedAt`) | AC-16; Task, «Ключевые данные: кошелёк»; FR-OPEN-13 |
+| `Wallet.status` enum (§8.2, 5 значений) | §8.2; OAS-TYPE-08 |
+| `Money` | OAS-TYPE-04 (баланс) |
+| `Problem` | OAS-ERR-01, 02 |
+| `WalletApplicationProblem` (`ownerType`, `applicationId`, `reason`) | AC-03 («с указанием типа»), AC-04 («идентификатор существующей заявки»), AC-01b («причина „не является ИП“»); значения `reason` — BR-DR-OPEN-01, 15 |
+| `parameters`: `ApplicationId`, `WalletId`, `IdempotencyKey`, `XRequestId` | OAS-PATH-02, 03; OAS-HDR-02, 03 |
+| `headers`: `Location`, `RetryAfter`, `CacheControlNoStore`, `XRequestId` | OAS-HDR-02, 04, 05, 06 |
+| `responses`: `BadRequest`, `Unauthorized`, `NotFound`, `InvalidApplicationState`, `IdempotencyKeyReused`, `TooManyRequests`, `InternalServerError`, `PlatformUnavailable`, `GatewayTimeout` | OAS-ERR-05; соответствующие операции выше |
+| `examples`: `IdempotencyKeyReused`, `InvalidApplicationState` | OAS-EX-01 (переиспользуемые примеры ошибок) |
 
 ### 5.3 Элементы диаграммы
 
 | Элемент диаграммы | Источник |
 |---|---|
-| Участники: Клиент, Мобильное приложение, КошелёкЦР | Task, «Акторы» |
-| Участники: АБС, Госуслуги, Платформа ЦР, Антифрод (в порядке первого вызова: шаги 2, 3, 5, 10) | Task, «Внешние системы»; коды — `integrations.md` |
-| Разделы `== Шаг N ==` | Task, «Основной сценарий» |
-| `[25]`–`[27]` переход в ЕСИА и служебный результат | Task шаг 4; INT-ESIA-02 (служебный endpoint вне клиентского API) |
-| `[30]`–`[34]` проверка счёта на платформе | Task шаг 5; INT-DRP-01; A5 |
-| `[68]`–`[73]` решение антифрода | Task шаг 10, A8; INT-AF-01; integrations «Антифрод» (`DENY` → `REJECTED`, `REVIEW` → `ON_REVIEW`) |
-| `[80]`–`[83]` решение ручной проверки | INT-AF-03; business-rules §8.1 (`ON_REVIEW → PROCESSING / REJECTED`) |
-| `[84]` уточнение статуса на платформе | NFR-AV-03; integrations (таймаут асинхронной операции, INT-DRP-08) |
-| `[85]`–`[89]` результат платформы | INT-DRP-03; A9; integrations (ошибки платформы); §8.1 (`FAILED`) |
-| `[106]` истечение заявки | Task A10; AC-19; NFR-RET-01 |
-| Легенда (400 / 401 / 500) | SKILL.md, соглашения по диаграмме |
+| Участники Клиент, Мобильное приложение, КошелёкЦР | Task, «Акторы» |
+| Участники АБС, Госуслуги, Платформа ЦР, Антифрод (в `box "Внешние системы"`, порядок первого вызова: шаги 2, 3, 5, 10) | Task, «Акторы», «Внешние системы»; `integrations.md` |
+| Разделы `== Шаг 1 … 13 ==` | Основной сценарий Task |
+| Раздел «Асинхронная обработка» (`[73]`–`[76]`) | Шаг 10 (асинхронно); INT-AF-03, INT-DRP-03 (результат), INT-DRP-08; NFR-AV-03; §8.1 |
+| Раздел «Истечение срока заявки» | A10, AC-19, NFR-RET-01 |
+| Раздел «Отмена заявки» | A6, AC-12, AC-20 |
+| Ветки шага 2 | A1, A1a, A2, A3; AC-01…05; BR-GEN-03, 04; NFR-RATE-01 |
+| Ветки шага 4 | A4; AC-07; `integrations.md` (ЕСИА) |
+| Ветки шага 5 | A5, E2; AC-08 |
+| Ветки шага 8 | A7, E4; AC-10, 11, 20 |
+| Ветки шага 10 | A8, A9, E1, E3; AC-13, 14, 21; BR-AF-03, 06; NFR-AV-03 |
+| Ветки отмены | A6, E4; AC-12, 20 |
+| `loop` опроса (`[77]`–`[80]`) и ветка `429` | NFR-PERF-03, NFR-RATE-03 |
+| Note «таймаут клиента 70 с» | NFR-PERF-05 |
+| Notes «закрытый ключ на устройстве», «пароль на устройстве» | BR-DR-OPEN-10, 11; FR-GEN-06; шаги 9, 12 |
+| Notes `Допущение A-01`…`A-06` | Раздел 7 отчёта |
+| Легенда (400 / 401 / 500, `RP-EXP`, BR-IDM-03) | SKILL.md (соглашения по диаграмме); NFR-AV-05; BR-IDM-03 |
 
 ### 5.4 Чувствительные данные
 
 | Поле | Уровень | Решение |
 |---|---|---|
-| `Wallet.walletNumberMasked` | C2, BANK_SECRECY | `MASK-WALLET`; полный номер не передаётся |
-| `Wallet.balance` | C2, BANK_SECRECY | Владельцу полностью, в логах `MASK-HIDE`; ответ с `Cache-Control: no-store` |
-| `SubmitCertificateRequestRequest.csr` | C1 | `writeOnly` |
-| Данные и токены ЕСИА | C3 | В API и на диаграмме не показаны (SD-API-16) |
-| Закрытый ключ ЭП, пароль кошелька | C3 | В API отсутствуют; на диаграмме — только шаги `[UI]` на устройстве |
-| Детали антифрода | C3 | На диаграмме только решение `ALLOW` / `REVIEW` / `DENY` (BR-AF-03) |
+| `walletNumberMasked` | C2 | `MASK-WALLET`, `x-sensitivity`; полный номер не возвращается (SD-API-04, 05); ответ `getWallet` с `Cache-Control: no-store` |
+| `balance` | C2 | Владельцу — полностью; в логах `MASK-HIDE`; `Cache-Control: no-store` |
+| `csr` | C1 | `writeOnly`; в логах `MASK-HASH`; закрытый ключ в API отсутствует (BR-DR-OPEN-10) |
+| `authorizationUrl` | C1 | Содержит только `state` = id заявки; код авторизации и токены ЕСИА клиенту не возвращаются (§3.3) |
+| Данные ЕСИА (ФИО, СНИЛС, паспорт) | C2 / C3 | В клиентский API не входят (SD-API-16); на диаграмме — только категориями `[29]` |
+| Решение антифрода | C3 | Клиенту — только общий `OPERATION_DECLINED_BY_SECURITY` (BR-AF-03, SD-API-15); на диаграмме — только `ALLOW` / `REVIEW` / `DENY` |
+| Пароль к кошельку | C3 | В API не передаётся (BR-DR-OPEN-11) |
+| Идентификаторы в путях | C1 | Только UUID (OAS-PATH-03, SD-API-02); C2/C3 в query нет |
+| Примеры | — | Синтетические: вымышленные UUID, домены `*.example`, номер `**** 7788` |
 
 ## 6. Ретраи и таймауты
 
-| Вызов | Таймаут | Повторы | Исход после исчерпания / по таймауту | Источник | Сообщения |
+| Вызов | Таймаут | Повторы | Исход после исчерпания / по таймауту | Источник | Сообщения `[NN]` |
 |---|---|---|---|---|---|
-| INT-ABS-01 Профиль клиента (шаг 2) | 1 с | 1 повтор (только чтение) | 503 `CORE_BANKING_UNAVAILABLE` / 504 `UPSTREAM_TIMEOUT`; заявка не создаётся | integrations «АБС»; AC-17 | `[06]`–`[08]` |
-| INT-ABS-01 Сведения об ИП (шаг 10) | 1 с | 1 повтор (только чтение) | 503 / 504; заявка остаётся `KEYS_PENDING` | integrations «АБС»; E1 | `[64]`–`[66]` |
-| INT-ESIA-01 Запрос авторизации | не задан | без повтора (A-06) | 503 `PLATFORM_UNAVAILABLE` / 504; заявка остаётся `CREATED` | integrations «ЕСИА» (503); E1 | `[19]`–`[21]` |
-| INT-DRP-01 Проверка наличия счёта | 1,5 с | без повтора (A-06) | не задано — открытый вопрос 10 | integrations «Платформа ЦР» | `[30]` |
-| INT-DRP-02 Договор (шаги 6, 8) | 1,5 с | без повтора (A-06) | 503 / 504; статус не меняется | integrations; E1; AC-17 | `[42]`–`[44]`, `[52]`–`[54]` |
-| INT-AF-01 Оценка заявки | 500 мс | без повтора | результат считается `REVIEW` → 202 `ON_REVIEW` | integrations «Антифрод» | `[68]`, `[71]`–`[72]` |
-| INT-DRP-03 Открытие счёта: подтверждение приёма | 1,5 с | без повтора (A-06) | 503 / 504; заявка остаётся `KEYS_PENDING` | integrations; E1; AC-17 | `[74]`–`[76]` |
-| INT-DRP-03 Открытие счёта: результат | 30 с | повторная отправка запрещена | уточнение статуса INT-DRP-08; заявка остаётся `PROCESSING` | integrations; NFR-AV-03 | `[84]` |
-| INT-DRP-04 Данные кошелька | 1,5 с | без повтора (A-06) | 503 / 504 | integrations; AC-17 | `[97]`–`[99]` |
-| Повтор клиентом после 503 / 504 (`createWalletApplication`, `createEsiaAuthorization`, `submitCertificateRequest`) | — | с тем же `Idempotency-Key`, в течение 24 ч | исходный результат | Task E1; NFR-AV-04 | `[08]` (note), `[22]`, `[67]`, `[77]` |
-| Повтор клиентом `getWalletApplicationContract` | — | обычный повтор (GET) | — | Task E1 | `[45]` |
-| Опрос статуса заявки | — | каждые 2 с, не дольше 60 с; не чаще 1 раза в секунду | 429 `TOO_MANY_REQUESTS`; через 60 с — «заявка в обработке» | NFR-PERF-03; NFR-RATE-03 | `[35]`–`[38]`, `[90]`–`[93]` |
+| INT-ABS-01 (шаг 2) | 1 с | `RP-EXP`, 3 попытки | `503 CORE_BANKING_UNAVAILABLE` / `504 UPSTREAM_TIMEOUT`, заявка не создаётся; повтор клиентом с тем же ключом выполняется заново | `integrations.md` (АБС, политика повтора); BR-IDM-03 | `[06]`–`[09]` |
+| INT-ESIA-01 (шаг 3) | 20 с | `RP-EXP`, 3 попытки | `503 ESIA_UNAVAILABLE` / `504 UPSTREAM_TIMEOUT`, статус без изменений | `integrations.md` (ЕСИА); E1; AC-17; NFR-PERF-05 (70 с у клиента) | `[21]`–`[24]` |
+| INT-ESIA-02 (шаг 4, служебный) | 20 с | `RP-EXP`, 3 попытки | Служебный обработчик → 500; заявка в `ESIA_PENDING`; клиент заново начинает шаг 3 | `integrations.md` (ЕСИА) | `[28]`–`[29]` |
+| INT-DRP-01 (шаг 5, служебный) | 1,5 с | `RP-EXP`, 3 попытки | Служебный обработчик → 500; заявка в `ESIA_PENDING` | E2; `integrations.md` (платформа) | `[30]`–`[31]` |
+| INT-DRP-02 (шаг 6) | 1,5 с | `RP-EXP`, 3 попытки | `503 PLATFORM_UNAVAILABLE` / `504 UPSTREAM_TIMEOUT`, статус без изменений | E1; AC-17; `integrations.md` | `[35]`–`[38]` |
+| INT-ABS-01 (шаг 10, только ИП) | 1 с | `RP-EXP`, 3 попытки | `503 CORE_BANKING_UNAVAILABLE` / `504 UPSTREAM_TIMEOUT`, `KEYS_PENDING` | `integrations.md` (АБС); допущение A-02 | `[54]`–`[56]` |
+| INT-AF-01 (шаг 10) | 500 мс | `RP-EXP`, 3 попытки | `503 SERVICE_UNAVAILABLE`, `KEYS_PENDING`; ни ручной проверки, ни отказа; повтор клиентом — новая проверка | E3; AC-21; BR-AF-06; BR-IDM-03 | `[57]`–`[60]` |
+| INT-DRP-03 (шаг 10, приём) | 1,5 с на приём | Без `RP-EXP`: повторная отправка только после INT-DRP-08; одна повторная отправка с тем же id операции | `503 PLATFORM_UNAVAILABLE`, `KEYS_PENDING` | `integrations.md` (политика повтора, платформа); NFR-AV-03; допущение A-04 | `[63]`–`[65]`, `[69]`–`[71]` |
+| INT-DRP-08 (шаг 10, уточнение приёма) | 1,5 с | `RP-EXP`, 3 попытки | `503 PLATFORM_UNAVAILABLE` / `504 UPSTREAM_TIMEOUT`, `KEYS_PENDING` | `integrations.md`; NFR-AV-03; E1 | `[66]`–`[68]`, `[72]` |
+| Результат INT-DRP-03 (асинхронно) | 30 с | После 30 с — INT-DRP-08 (`RP-EXP`) | Заявка остаётся в `PROCESSING` до результата | `integrations.md` (платформа: «результат — до 30 с»); NFR-AV-02, 03 | `[74]`–`[76]` |
+| INT-DRP-04 (шаг 13) | 1,5 с | `RP-EXP`, 3 попытки | `503 PLATFORM_UNAVAILABLE` / `504 UPSTREAM_TIMEOUT` | `integrations.md`; AC-17 | `[84]`–`[86]` |
+| Опрос `getWalletApplication` (шаг 11) | — | Каждые 2 с, не дольше 60 с; `429` чаще 1 раза в секунду | Через 60 с — «заявка в обработке» | NFR-PERF-03, NFR-RATE-03 | `[77]`–`[80]` |
+| Повтор клиентом `acceptWalletApplicationContract` / `cancelWalletApplication` после таймаута | — | Тот же `Idempotency-Key` | Сохранённый `200`, не `409` | E4; AC-20; BR-IDM-01 | `[47]`–`[48]`, `[93]`–`[94]` |
 
 ## 7. Допущения
 
-| ID | Допущение | Где отражено |
+| ID | Допущение | Где отражено (OAS / диаграмма) |
 |---|---|---|
-| A-01 | ИП открывает кошелёк для предпринимательской деятельности в том же мобильном приложении (Story, Task). | OAS `info.description` |
-| A-02 | CSR — PKCS#10 DER в base64 (`format: byte`, до 8192 символов); алгоритмы `GOST_R_34_10_2012_256`, `GOST_R_34_10_2012_512`. | OAS `x-assumption` у `csr`, `keyAlgorithm` |
-| A-03 | При принятии договора версия сверяется с актуальной на платформе ЦР (отсюда 503 / 504). | OAS `x-assumption`; диаграмма, note у `[52]` |
-| A-04 | В `submitCertificateRequest` до ответа 202 синхронно выполняются: АБС (для ИП), антифрод, передача запроса на платформу. Асинхронно — только результат платформы. | OAS `x-assumption`, `info.description`; диаграмма, шаг 10 |
-| A-05 | Маска номера кошелька — `**** XXXX`. | OAS `x-assumption` у `walletNumberMasked` |
-| A-06 | Для ЕСИА и синхронных операций платформы в `integrations.md` политика повтора не задана (для ЕСИА не задан и таймаут) — принято «без повтора» (SKILL.md, шаг 3). | Диаграмма, notes у `[19]`, `[30]`, `[42]`, `[52]`, `[74]`, `[97]` |
-| A-07 | Повтор `createWalletApplication` с тем же ключом возвращает 201 с той же заявкой. | OAS description; диаграмма `[04]` |
-| A-08 | Договор — подресурс-синглтон `/contract`, принятие — `/contract-acceptance`, отмена — `POST …/cancel`. | Пути OAS |
+| A-01 | Актуальность `contractVersion` при принятии договора проверяется по актуальной версии, известной модулю от платформы (INT-DRP-02), без вызова платформы в запросе: у шага 8 в Task нет `[EXT]`, а платформа указана только на шагах 5, 6, 10. Поэтому у `acceptWalletApplicationContract` нет `503` / `504`. | `info.description`; `x-assumption` операции `acceptWalletApplicationContract`; note на шаге 8 |
+| A-02 | Сведения об ИП для шага 10 модуль читает из АБС (INT-ABS-01) синхронно в запросе `submitCertificateRequest`, поэтому у операции есть `503 CORE_BANKING_UNAVAILABLE` / `504`. Task указывает АБС на шаге 10, но не говорит, синхронно ли и что делать при недоступности. | `info.description`; `x-assumption` операции `submitCertificateRequest`; note на шаге 10 |
+| A-03 | Решение антифрода получается синхронно в запросе `submitCertificateRequest` (следует из E3 / AC-21: при недоступности заявка остаётся в `KEYS_PENDING`). Ответ `202` содержит заявку в статусе `PROCESSING`, `ON_REVIEW` или `REJECTED` (`OPERATION_DECLINED_BY_SECURITY`). | `info.description`; `x-assumption` и `description` операции; note на шаге 10, `[61]`, `[62]` |
+| A-04 | Если приём INT-DRP-03 не подтверждён за 1,5 с, модуль уточняет статус (INT-DRP-08) и, если платформа запрос не получила, отправляет его повторно **один раз** с тем же id операции; затем — `503 PLATFORM_UNAVAILABLE`. Число повторных отправок в источниках не задано. | `info.description`; `x-assumption` операции; note `[69]` |
+| A-05 | Формат номера счёта цифрового рубля (sensitive-data §11), идентификатора договора на платформе и перечень алгоритмов ключа ЭП не заданы: `walletNumberMasked`, `contractId`, `keyAlgorithm` описаны строками без `pattern` / `enum`. | `info.description`; `x-assumption` у полей; note на шаге 13 |
+| A-06 | Условия перехода `PROCESSING` → `FAILED` в Task и контексте не заданы; статус оставлен в `enum` по §8.1 (OAS-TYPE-08), поле `errorCode` из §8.1 не добавлено. | `info.description`; `x-assumption` у `WalletApplicationStatus`; note в асинхронной обработке |
 
 ## 8. Противоречия между источниками
 
 | # | Противоречие | Решение |
 |---|---|---|
-| 1 | Task E1 называет недоступность внешних систем только для шагов 3, 6, 10, но шаг 2 вызывает АБС, а шаг 13 — платформу (integrations.md). | 503 / 504 есть и у `createWalletApplication`, и у `getWallet` (правило SKILL.md). |
-| 2 | Task: шаг 8 к платформе не обращается; integrations.md: «Версия договора неактуальна» — результат платформы, 409 при принятии. | Сверка на платформе (A-03); открытый вопрос 2. |
-| 3 | В статусной модели §8.1 есть `FAILED` с полем `errorCode`; в Task и Story этого статуса нет. | `FAILED` включён в enum (OAS-TYPE-08), на диаграмме — `[89]`. `errorCode` не добавлен. |
-| 4 | Task, AC-14 и integrations.md по-разному описывают момент проверки антифрода: AC-14 — «для заявки в `PROCESSING`», Task — синхронно, integrations — «АФ → платформа → 202». | **Исправлено в этой версии** (раздел 0): антифрод синхронный, до передачи на платформу; 202 возвращает `PROCESSING` / `ON_REVIEW` / `REJECTED`. Прежняя версия OAS (антифрод асинхронно, после передачи на платформу) противоречила Task. |
-| 5 | §8.1: из `ON_REVIEW` после проверки — в `PROCESSING`; в Task A8 обратного пути нет. | По §8.1 (`[80]`–`[83]`). |
-| 6 | AC-02 не требует поля причины для возраста и гражданства; BR-DR-OPEN-01 его задаёт. | `reason` для всех трёх случаев. |
+| 1 | AC-14: «Дано заявка в статусе `PROCESSING` → антифрод → `ON_REVIEW` / `REJECTED`» и §8.1 (`KEYS_PENDING` → `PROCESSING` → `ON_REVIEW`) vs E3 / AC-21: при недоступности антифрода заявка остаётся в `KEYS_PENDING`, т. е. проверка выполняется до перехода в `PROCESSING` в рамках запроса. | Антифрод вызывается синхронно в `submitCertificateRequest`; при недоступности — `503`, `KEYS_PENDING`; при решении — заявка в `PROCESSING` / `ON_REVIEW` / `REJECTED` в ответе `202` (A-03). Порядок переходов §8.1 сохраняется логически. |
+| 2 | Task, «Внешние системы»: платформа ЦР — шаги 5, 6, 10 (шаг 13 не указан) vs FR-OPEN-13 / `integrations.md` (INT-DRP-04 используется в FR-OPEN-13) и FR-GEN-05 (баланс — данные платформы). | `getWallet` вызывает INT-DRP-04; у операции `503 PLATFORM_UNAVAILABLE` / `504 UPSTREAM_TIMEOUT` (AC-17 покрывает «шаг, требующий обращения к платформе»). |
+| 3 | `business-rules.md` BR-DR-OPEN-02 и §9: `ESIA_CONSENT_DENIED` / `ESIA_ACCOUNT_NOT_CONFIRMED` — HTTP 422 vs AC-07, A4, `integrations.md` (ЕСИА): результат влияет на статус заявки, а не на HTTP-ответ. | По приоритету AC: статус `REJECTED` с `rejectReason`; HTTP 422 с этими кодами не используется. |
+| 4 | BR-DR-OPEN-04: проверка по данным платформы → HTTP `409 WALLET_ALREADY_EXISTS` vs AC-08 / A5: при проверке на платформе — статус `REJECTED` с причиной. | На шаге 2 (кошелёк открыт через наш банк) — `409 WALLET_ALREADY_EXISTS` (AC-03); на шаге 5 (платформа) — `REJECTED` / `WALLET_ALREADY_EXISTS` (AC-08). |
+| 5 | BR-DR-OPEN-10 (`422 CERTIFICATE_ISSUE_FAILED`), BR-DR-OPEN-14 / BR-AML-01 (`422 WALLET_OPENING_REFUSED`) vs шаг 10 асинхронный, `integrations.md`: отказы платформы — статус `REJECTED`. | `rejectReason: CERTIFICATE_ISSUE_FAILED` / `WALLET_OPENING_REFUSED` у заявки; HTTP 422 с этими кодами не используется. |
+| 6 | E1 для шага 10 перечисляет только `PLATFORM_UNAVAILABLE` / `UPSTREAM_TIMEOUT` и E3 — `SERVICE_UNAVAILABLE`, а Task указывает обращение к АБС на шаге 10. | Добавлен `503 CORE_BANKING_UNAVAILABLE` / `504` по таблице `integrations.md` (АБС) для `SOLE_PROPRIETOR` (A-02). |
+| 7 | AC-02 не требует причины в отказе `CLIENT_NOT_ELIGIBLE`, а BR-DR-OPEN-01 («В OAS») задаёт `reason: AGE / CITIZENSHIP / NOT_SOLE_PROPRIETOR`; AC-01b требует причину «не является ИП». | Поле `reason` введено по AC-01b; значения `AGE`, `CITIZENSHIP` — по BR-DR-OPEN-01 (противоречия с AC нет, но AC их прямо не требует — вынесено в открытые вопросы). |
 
 ## 9. Новые бизнес-коды
 
-Нет. Все коды взяты из `business-rules.md` §9; на диаграмме нет кодов, которых нет в OAS (сверка — раздел 2.2).
+Нет. Все коды в OAS и на диаграмме — из каталога `knowledge/business-rules.md` §9. Значения `reason` (`AGE`, `CITIZENSHIP`, `NOT_SOLE_PROPRIETOR`) — из BR-DR-OPEN-01, 15.
 
 ## 10. Открытые вопросы
 
-1. Нужны ли для кошелька ИП дополнительные сведения или документы от клиента, кроме данных АБС? (Task, FR §8.)
-2. Сверяется ли версия договора с платформой при принятии (A-03), или модуль хранит актуальную версию у себя? От ответа зависят 503 / 504 у `acceptWalletApplicationContract`.
-3. Формат CSR и алгоритмы ключа ЭП (A-02).
-4. Как получить новую ссылку на Госуслуги, если заявка зависла в `ESIA_PENDING`? Сейчас повтор возможен только с тем же `Idempotency-Key`.
-5. Нужно ли клиенту поле `errorCode` для `FAILED`?
-6. Истекает ли заявка в `ON_REVIEW`? По §8.1 перехода `ON_REVIEW → EXPIRED` нет.
-7. Формат номера счёта ЦР и `MASK-WALLET` (sensitive-data §11).
-8. Уведомление об открытии (BR-DR-OPEN-12): подтвердить, что оно вне клиентского API.
-9. Нужен ли отдельный `ownerType` для лиц частной практики (BR-DR-OPEN-06)?
-10. **Новое.** Что происходит, если на шаге 5 платформа недоступна (INT-DRP-01)? Заявка остаётся в `ESIA_PENDING` и проверка повторяется сервером, или заявка переходит в `FAILED`? В источниках не задано.
-11. **Новое.** Политика повтора и таймаут для ЕСИА, политика повтора для синхронных операций платформы (A-06). Пока принято «без повтора».
-12. **Новое.** Повторяет ли модуль проверку антифрода при повторе клиентом с тем же `Idempotency-Key` после 503 от платформы, или использует сохранённое решение?
+1. Условия перехода заявки в `FAILED` и нужен ли клиенту `errorCode` (§8.1) — влияет на `WalletApplication` и асинхронную ветку диаграммы (A-06).
+2. Сколько раз модуль повторно отправляет INT-DRP-03 после того, как INT-DRP-08 показал «не получено», и что делать, если INT-DRP-08 недоступна: сейчас клиенту возвращается `503` / `504` с `KEYS_PENDING`, хотя платформа могла запрос получить (риск расхождения статуса с платформой) — влияет на шаг 10 (A-04).
+3. Сведения об ИП на шаге 10: перечитывать из АБС синхронно в запросе (как сейчас, с `503 CORE_BANKING_UNAVAILABLE`), использовать данные шага 2 или читать асинхронно — влияет на ответы `submitCertificateRequest` (A-02).
+4. Допустим ли ответ `202` с итоговым статусом `REJECTED` (антифрод `DENY`) или нужен иной код ответа — влияет на `submitCertificateRequest` (A-03).
+5. Как модуль узнаёт актуальную версию договора при принятии (кэш INT-DRP-02, событие платформы или вызов платформы в запросе); при вызове платформы у `acceptWalletApplicationContract` появятся `503` / `504` (A-01).
+6. Форматы: номер счёта цифрового рубля и правило `MASK-WALLET`, идентификатор договора на платформе, перечень алгоритмов ключа ЭП и кодировка CSR (A-05).
+7. Нужно ли сообщать клиенту `reason: AGE / CITIZENSHIP` при `CLIENT_NOT_ELIGIBLE` (AC-02 этого не требует) — влияет на `WalletApplicationProblem.reason`.
 
 ## 11. Проверка человеком
 
-| # | Замечание | Тип | Исправление | ai-log |
-|---|---|---|---|---|
-| 1 | `acceptWalletApplicationContract` и `cancelWalletApplication` — `POST` без `Idempotency-Key`. Если сервер выполнил переход, а клиент получил `504`, повтор без ключа вернёт `409 INVALID_APPLICATION_STATE`, и приложение не узнает, выполнен ли шаг. | Ошибка агента | Добавлены `Idempotency-Key` и `422 IDEMPOTENCY_KEY_REUSED` в обе операции; на диаграмме — ключ в сообщениях, ветка `422` и `opt` повтора с сохранённым ответом. Коммит `fix(human)`. | ERR-01 |
+<!-- Заполняет проверяющий -->
