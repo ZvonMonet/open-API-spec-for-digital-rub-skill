@@ -33,11 +33,8 @@ info:
     передаётся с обязательным `Idempotency-Key` (BR-IDM-01, NFR-AV-04). Пароль к кошельку
     и закрытый ключ ЭП остаются на устройстве и в API не передаются (BR-DR-OPEN-10, 11).
 
-    **Допущения** (подробно — в `koshelek-cr-wallet-opening-api-check.md`, раздел 7):
-    - A-07. Шаг 10: если запрос на открытие счёта (INT-DRP-03) не удалось доставить на платформу,
-      клиент получает `503 PLATFORM_UNAVAILABLE`, заявка остаётся в `KEYS_PENDING` (AC-17, E1).
-      Если запрос отправлен, но приём не подтверждён, заявка переходит в `PROCESSING`,
-      а уточнение статуса и повторные отправки выполняются асинхронно; при неудаче — `FAILED`.
+    **Допущения:** нет (все сняты решениями владельца продукта 25.11.2026, см.
+    `koshelek-cr-wallet-opening-api-check.md`, раздел 7).
   x-jira-keys: [SCRUM-2194, SCRUM-2196]
 servers:
   - url: https://api.bank.example/koshelek-cr/v1
@@ -623,7 +620,7 @@ paths:
         - `503 SERVICE_UNAVAILABLE` — проверка безопасности недоступна, повторы исчерпаны
           (AC-21, E3, BR-AF-06); ни ручная проверка, ни отказ не применяются;
         - `503 PLATFORM_UNAVAILABLE` — запрос INT-DRP-03 не удалось доставить на платформу
-          (AC-17, E1; допущение A-07).
+          (AC-17, E1; `integrations.md`, «Недоставленный и неподтверждённый запрос»).
         Ответы `5xx` по ключу идемпотентности не сохраняются: повтор с тем же `Idempotency-Key`
         выполняет запрос заново, включая проверку антифрода (BR-IDM-03).
 
@@ -635,7 +632,6 @@ paths:
       x-acceptance-criteria: [AC-13, AC-14, AC-15, AC-17, AC-18, AC-19, AC-21]
       x-business-rules: [BR-GEN-02, BR-DR-OPEN-10, BR-DR-OPEN-14, BR-DR-OPEN-15, BR-AF-01, BR-AF-02, BR-AF-03, BR-AF-06, BR-AML-01, BR-IDM-01, BR-IDM-02, BR-IDM-03, BR-TIME-03]
       x-external-systems: [ANTIFRAUD, DR_PLATFORM]
-      x-assumption: A-07. 503 PLATFORM_UNAVAILABLE — только если INT-DRP-03 не доставлен; неподтверждённый приём обрабатывается асинхронно (PROCESSING → FAILED).
       parameters:
         - $ref: '#/components/parameters/ApplicationId'
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -712,7 +708,7 @@ paths:
             BR-IDM-03):
             - `SERVICE_UNAVAILABLE` — проверка безопасности (AC-21, E3, BR-AF-06);
             - `PLATFORM_UNAVAILABLE` — запрос на открытие счёта не доставлен на платформу
-              (AC-17, E1, A-07).
+              (AC-17, E1).
           headers:
             Retry-After:
               $ref: '#/components/headers/RetryAfter'

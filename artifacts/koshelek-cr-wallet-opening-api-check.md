@@ -83,7 +83,7 @@ PlantUML 1.2024.8 (jar из Maven Central), код возврата 0
 | AC-14 | `submitCertificateRequest` → `202` с `ON_REVIEW` / `REJECTED` (`OPERATION_DECLINED_BY_SECURITY`); `getWalletApplication` — переходы из `ON_REVIEW` | `[62]`, `[63]`, `[67]` и ветки после него | Да (`202` с `REJECTED` подтверждён — BR-AF-02, OAS-ASYNC-04) |
 | AC-15 | `getWalletApplication` → `COMPLETED`, `walletId` | Асинхронная обработка, ветка «счёт открыт» после `[68]`; `[75]` | Да |
 | AC-16 | `getWallet` → `200 Wallet` (`ownerType`, `status: ACTIVE`, `walletNumberMasked`, `balance` 0.00 RUB, `openedAt`) | `[82]` | Да |
-| AC-17 | `503 ESIA_UNAVAILABLE` (`startEsiaAuthorization`), `503 PLATFORM_UNAVAILABLE` (`getWalletApplicationContract`, `acceptWalletApplicationContract`, `submitCertificateRequest`, `getWallet`), `Retry-After`, `504 UPSTREAM_TIMEOUT` (кроме `submitCertificateRequest`) | `[23]`, `[37]`, `[47]`, `[65]`, `[81]` | Да (шаг 10 — см. A-07) |
+| AC-17 | `503 ESIA_UNAVAILABLE` (`startEsiaAuthorization`), `503 PLATFORM_UNAVAILABLE` (`getWalletApplicationContract`, `acceptWalletApplicationContract`, `submitCertificateRequest`, `getWallet`), `Retry-After`, `504 UPSTREAM_TIMEOUT` (кроме `submitCertificateRequest`) | `[23]`, `[37]`, `[47]`, `[65]`, `[81]` | Да |
 | AC-18 | `404 RESOURCE_NOT_FOUND` у всех операций с `applicationId` | `[18]`, `[33]`, `[42]`, `[55]`, `[74]`, `[84]` | Да |
 | AC-19 | `expiresAt`, статус `EXPIRED`; `409 INVALID_APPLICATION_STATE` для шагов по истёкшей заявке | Раздел «Истечение срока заявки»; `[19]`, `[34]`, `[44]`, `[57]`, `[86]` | Да |
 | AC-20 | `Idempotency-Key` у `acceptWalletApplicationContract` и `cancelWalletApplication`; повтор → сохранённый `200` | `[51]`–`[52]`, `[88]`–`[89]` | Да |
@@ -112,7 +112,7 @@ PlantUML 1.2024.8 (jar из Maven Central), код возврата 0
 | `submitCertificateRequest` | Шаг 10 `[API]`, FR-OPEN-07…09; AC-13, AC-14, AC-21 |
 | — `202` + `Location` | NFR-PERF-02, OAS-ASYNC-01; AC-13 |
 | — `503 SERVICE_UNAVAILABLE` | E3; AC-21; BR-AF-06 |
-| — `503 PLATFORM_UNAVAILABLE` | E1; AC-17; допущение A-07 (`504` не используется: неподтверждённый приём уходит в асинхронную обработку) |
+| — `503 PLATFORM_UNAVAILABLE` | E1; AC-17; `integrations.md` — недоставленный запрос INT-DRP-03 (`504` не используется: неподтверждённый приём уходит в асинхронную обработку) |
 | `getWalletApplication` | Шаг 11 `[API]`, FR-OPEN-10 (в т. ч. `FAILED` с `errorCode`); AC-07, 08, 14, 15, 18, 19; `429` — NFR-RATE-03; интервал опроса — NFR-PERF-03 |
 | `getWallet` | Шаг 13 `[API]`, FR-OPEN-13; AC-16; `503` / `504` — INT-DRP-04, FR-GEN-05 (см. противоречие 2) |
 | — `Cache-Control: no-store` | SD-API-10 (баланс и номер кошелька — C2) |
@@ -165,7 +165,6 @@ PlantUML 1.2024.8 (jar из Maven Central), код возврата 0
 | `loop` опроса (`[72]`–`[75]`) и ветка `429` | NFR-PERF-03, NFR-RATE-03 |
 | Note «таймаут клиента 70 с» | NFR-PERF-05 |
 | Notes «закрытый ключ на устройстве», «пароль на устройстве» | BR-DR-OPEN-10, 11; FR-GEN-06; шаги 9, 12 |
-| Note `Допущение A-07` | Раздел 7 отчёта |
 | Легенда (400 / 401 / 500, `RP-EXP`, BR-IDM-03) | SKILL.md (соглашения по диаграмме); NFR-AV-05; BR-IDM-03 |
 
 ### 5.4 Чувствительные данные
@@ -193,7 +192,7 @@ PlantUML 1.2024.8 (jar из Maven Central), код возврата 0
 | INT-DRP-02 (шаг 6) | 1,5 с | `RP-EXP`, 3 попытки | `503 PLATFORM_UNAVAILABLE` / `504 UPSTREAM_TIMEOUT`, статус без изменений | E1; AC-17; `integrations.md` | `[35]`–`[38]` |
 | INT-DRP-02 (шаг 8) | 1,5 с | `RP-EXP`, 3 попытки | `503 PLATFORM_UNAVAILABLE` / `504 UPSTREAM_TIMEOUT`, `CONTRACT_PENDING`; повтор клиентом с тем же ключом — версия проверяется заново | AC-11, AC-17, E1; FR-OPEN-06; BR-IDM-03 | `[45]`–`[48]` |
 | INT-AF-01 (шаг 10) | 500 мс | `RP-EXP`, 3 попытки | `503 SERVICE_UNAVAILABLE`, `KEYS_PENDING`; ни ручной проверки, ни отказа; повтор клиентом — новая проверка | E3; AC-21; BR-AF-06; BR-IDM-03 | `[58]`–`[61]` |
-| INT-DRP-03 (шаг 10, отправка) | 1,5 с на приём | Без `RP-EXP` | Не доставлен — `503 PLATFORM_UNAVAILABLE`, `KEYS_PENDING`; отправлен — `202`, `PROCESSING` | AC-17, E1; `integrations.md` (политика повтора); допущение A-07 | `[64]`–`[66]` |
+| INT-DRP-03 (шаг 10, отправка) | 1,5 с на приём | Без `RP-EXP` | Не доставлен — `503 PLATFORM_UNAVAILABLE`, `KEYS_PENDING`; отправлен — `202`, `PROCESSING` | AC-17, E1; `integrations.md` (политика повтора; недоставленный и неподтверждённый запрос) | `[64]`–`[66]` |
 | INT-DRP-08 (асинхронно: приём не подтверждён или нет результата за 30 с) | 1,5 с | `RP-EXP`, 3 попытки | Повторы исчерпаны — `FAILED` (`PLATFORM_UNAVAILABLE`) | `integrations.md` (Платформа ЦР, решение 25.11.2026); NFR-AV-03; FR-OPEN-10 | `[69]`–`[70]` |
 | Повторная отправка INT-DRP-03 (асинхронно) | 1,5 с на приём | Только после INT-DRP-08 «не получена», не более 3 раз, тот же id операции | Исчерпаны — `FAILED` (`PLATFORM_UNAVAILABLE`); результат не уточнён за время ожидания — `FAILED` (`UPSTREAM_TIMEOUT`) | `integrations.md` (Платформа ЦР, решение 25.11.2026); NFR-AV-03; FR-OPEN-10 | `[71]` |
 | INT-DRP-04 (шаг 13) | 1,5 с | `RP-EXP`, 3 попытки | `503 PLATFORM_UNAVAILABLE` / `504 UPSTREAM_TIMEOUT` | `integrations.md`; AC-17 | `[79]`–`[81]` |
@@ -202,11 +201,9 @@ PlantUML 1.2024.8 (jar из Maven Central), код возврата 0
 
 ## 7. Допущения
 
-| ID | Допущение | Где отражено (OAS / диаграмма) |
-|---|---|---|
-| A-07 | Шаг 10: E1 / AC-17 требуют `503 PLATFORM_UNAVAILABLE` с неизменным статусом, а решение 25.11.2026 переводит заявку в `FAILED`, когда повторные отправки INT-DRP-03 исчерпаны. Разграничение: запрос не удалось доставить на платформу (операция на платформу не попала) — `503`, `KEYS_PENDING`; запрос отправлен, но приём не подтверждён — `202`, `PROCESSING`, дальше уточнение статуса и повторные отправки асинхронно, при неудаче — `FAILED`. `504` у операции не используется. | `info.description`; `x-assumption` операции `submitCertificateRequest`; note `Допущение A-07` на шаге 10 |
+Действующих допущений нет.
 
-Сняты 25.11.2026 по ответам владельца (правка `fix(human)`): A-01 (версия договора — запросом INT-DRP-02 в момент принятия; ERR-02), A-02 (сведения об ИП — из заявки, шаг 2), A-03 (`202` с `REJECTED` допустим), A-04 (до 3 повторных отправок; INT-DRP-08 недоступна — `FAILED`), A-05 (форматы: OAS-TYPE-10…13, `MASK-WALLET`), A-06 (условия `FAILED` и `errorCode`; ERR-03).
+Сняты 25.11.2026 по ответам владельца (правка `fix(human)`): A-01 (версия договора — запросом INT-DRP-02 в момент принятия; ERR-02), A-02 (сведения об ИП — из заявки, шаг 2), A-03 (`202` с `REJECTED` допустим), A-04 (до 3 повторных отправок; INT-DRP-08 недоступна — `FAILED`), A-05 (форматы: OAS-TYPE-10…13, `MASK-WALLET`), A-06 (условия `FAILED` и `errorCode`; ERR-03), A-07 (разграничение `503` / `FAILED` на шаге 10 — подтверждено, стало правилом в `integrations.md`).
 
 ## 8. Противоречия между источниками
 
@@ -219,8 +216,8 @@ PlantUML 1.2024.8 (jar из Maven Central), код возврата 0
 | 5 | BR-DR-OPEN-10 (`422 CERTIFICATE_ISSUE_FAILED`), BR-DR-OPEN-14 / BR-AML-01 (`422 WALLET_OPENING_REFUSED`) vs шаг 10 асинхронный, `integrations.md`: отказы платформы — статус `REJECTED`. | `rejectReason: CERTIFICATE_ISSUE_FAILED` / `WALLET_OPENING_REFUSED` у заявки; HTTP 422 с этими кодами не используется. |
 | 6 | Task, шаг 10: «сведения об ИП из АБС» vs решение 25.11.2026: сведения получены на шаге 2 и хранятся в заявке. | АБС на шаге 10 не вызывается, `503 CORE_BANKING_UNAVAILABLE` у `submitCertificateRequest` нет (FR-OPEN-09). |
 | 7 | AC-02 не требует причины в отказе `CLIENT_NOT_ELIGIBLE`, а BR-DR-OPEN-01 («В OAS») задаёт `reason: AGE / CITIZENSHIP / NOT_SOLE_PROPRIETOR`; AC-01b требует причину «не является ИП». | Поле `reason` введено по AC-01b; значения `AGE`, `CITIZENSHIP` — по BR-DR-OPEN-01 (противоречия с AC нет, но AC их прямо не требует — решение 25.11.2026: `reason` возвращается всегда, AC-02 не меняется). |
-| 8 | AC-11 требует обнаружить новую версию договора, а шаг 8 в Task не размечен `[EXT:DR_PLATFORM]`. | По приоритету AC и решению 25.11.2026 (вариант А) — вызов INT-DRP-02 в запросе принятия; Task SCRUM-2194 дополняет владелец (ERR-02). |
-| 9 | E1 / AC-17 (`503`, статус не меняется) vs решение 25.11.2026 (`FAILED` при исчерпании повторных отправок INT-DRP-03) на шаге 10. | Разграничено по доставке запроса — допущение A-07. |
+| 8 | AC-11 требует обнаружить новую версию договора, а шаг 8 в Task не размечен `[EXT:DR_PLATFORM]`. | По приоритету AC и решению 25.11.2026 (вариант А) — вызов INT-DRP-02 в запросе принятия; 25.11.2026 владелец добавил в шаг 8 SCRUM-2194 `[EXT:DR_PLATFORM]`, в E1 — шаг 8 (ERR-02). |
+| 9 | E1 / AC-17 (`503`, статус не меняется) vs решение 25.11.2026 (`FAILED` при исчерпании повторных отправок INT-DRP-03) на шаге 10. | Разграничено по доставке запроса: недоставленный — `503`, `KEYS_PENDING`; отправленный без подтверждения — `202`, `PROCESSING`, далее до `FAILED` (решение 25.11.2026, `integrations.md`). |
 
 ## 9. Новые бизнес-коды
 
@@ -228,9 +225,9 @@ PlantUML 1.2024.8 (jar из Maven Central), код возврата 0
 
 ## 10. Открытые вопросы
 
-1. Подтвердить разграничение на шаге 10 (A-07): `503 PLATFORM_UNAVAILABLE` — только если запрос INT-DRP-03 не доставлен; неподтверждённый приём — `202 PROCESSING` и асинхронная обработка до `FAILED`.
+Нет.
 
-Закрыты 25.11.2026 (ответы владельца продукта): условия `FAILED` и `errorCode`; повторные отправки INT-DRP-03 (до 3) и недоступность INT-DRP-08; сведения об ИП из заявки; `202` с `REJECTED`; проверка версии договора запросом к платформе; форматы `walletNumber`, `contractId`, CSR, `keyAlgorithm`; `reason: AGE / CITIZENSHIP` возвращается всегда.
+Закрыты 25.11.2026 (ответы владельца продукта): условия `FAILED` и `errorCode`; повторные отправки INT-DRP-03 (до 3) и недоступность INT-DRP-08; сведения об ИП из заявки; `202` с `REJECTED`; проверка версии договора запросом к платформе; форматы `walletNumber`, `contractId`, CSR, `keyAlgorithm`; `reason: AGE / CITIZENSHIP` возвращается всегда; разграничение `503` / `FAILED` на шаге 10.
 
 ## 11. Проверка человеком
 
