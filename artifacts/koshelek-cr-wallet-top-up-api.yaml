@@ -1,0 +1,1187 @@
+openapi: 3.0.3
+info:
+  title: КошелёкЦР — пополнение кошелька цифрового рубля с банковского счёта
+  version: 1.0.0
+  description: |
+    Клиентский API модуля КошелёкЦР для пополнения кошелька (счёта) цифрового рубля
+    с рублёвого счёта клиента в банке из мобильного приложения банка.
+
+    **Потребитель:** мобильное приложение банка (через API Gateway банка, NFR-SEC-01).
+    **Провайдер:** модуль КошелёкЦР.
+
+    **Объём (SCRUM-2195, SCRUM-2197):** пополнение личного кошелька (`INDIVIDUAL`) с текущего
+    рублёвого счёта физического лица и кошелька ИП (`SOLE_PROPRIETOR`) с расчётного рублёвого
+    счёта ИП; выбор кошелька-получателя и счёта-источника; остаток лимита пополнения за
+    скользящие 30 дней для личного кошелька; отслеживание статуса операции и баланс кошелька
+    после зачисления.
+
+    **Не входит:** вывод средств, переводы другим людям, история операций, подтверждение кодом
+    OTP, API бэк-офиса; служебные обработчики результата зачисления и решения ручной проверки.
+
+    **Внешние системы** (вызывает модуль, в клиентском API не описываются как операции):
+    АБС (`CORE_BANKING`), платформа цифрового рубля Банка России (`DR_PLATFORM`), антифрод
+    банка (`ANTIFRAUD`). Взаимодействие с платформой — по требованиям Банка России к участникам
+    платформы: защищённый канал, СКЗИ, ГОСТ (NFR-SEC-03, SD-API-14). Чтение из внешних систем
+    модуль повторяет по политике `RP-EXP`: 3 попытки, экспоненциальная задержка с полным
+    джиттером (NFR-AV-05). Изменяющие операции АБС (блокировка, списание, снятие блокировки)
+    и отправку зачисления на платформу модуль без уточнения статуса не повторяет (NFR-AV-03).
+
+    **Общее:** синхронные операции — не дольше 2 с (p95, NFR-PERF-01); создание пополнения
+    отвечает `202`, результат приложение узнаёт опросом каждые 2 с (NFR-PERF-02, NFR-PERF-03).
+    Каждый `POST` передаётся с обязательным `Idempotency-Key` (BR-IDM-01, NFR-AV-04).
+    Распоряжение подписывается ключом ЭП клиента на устройстве; отдельный OTP не нужен
+    (FR-TOP-05). Пароль к кошельку в API не передаётся (FR-GEN-06). Пополнение бесплатно
+    (BR-DR-TOP-05).
+
+    **Допущения** (`x-assumption` у элементов, подробности —
+    `koshelek-cr-wallet-top-up-api-check.md`, раздел 7): A-01…A-09.
+  x-jira-keys: [SCRUM-2195, SCRUM-2197]
+servers:
+  - url: https://api.bank.example/koshelek-cr/v1
+    description: Пример окружения
+security:
+  - bearerAuth: []
+tags:
+  - name: Wallet Top-up
+    description: Пополнение кошелька цифрового рубля с банковского счёта
+paths:
+  /wallets:
+    get:
+      operationId: listWallets
+      summary: Получить кошельки клиента для выбора получателя пополнения
+      description: |
+        Шаг 2 сценария SCRUM-2195. Клиент определяется по токену (BR-GEN-01); возвращаются
+        только его кошельки (BR-GEN-02). У клиента не больше двух кошельков: личный и кошелёк ИП
+        (BR-DR-OPEN-04, BR-DR-OPEN-05), поэтому список без пагинации.
+
+        **Что делает сервер (синхронно):** для каждого кошелька клиента получает текущий статус
+        на платформе — INT-DRP-04 (таймаут попытки 1,5 с, повтор `RP-EXP`). Возвращает тип,
+        статус и маскированный номер (AC-01, FR-TOP-09). Баланс в списке не возвращается
+        (SD-API-01). Пополнить можно кошелёк в статусе, который допускает зачисление (§8.2);
+        окончательно это проверяет `createWalletTopUp`.
+
+        **Ошибки:** `503 PLATFORM_UNAVAILABLE` / `504 UPSTREAM_TIMEOUT` — платформа недоступна,
+        повторы исчерпаны. Критерии приёмки: AC-01.
+      tags: [Wallet Top-up]
+      x-jira-key: SCRUM-2195
+      x-acceptance-criteria: [AC-01]
+      x-business-rules: [BR-GEN-01, BR-GEN-02, BR-DR-OPEN-04, BR-DR-OPEN-05, BR-TIME-03]
+      x-external-systems: [DR_PLATFORM]
+      parameters:
+        - $ref: '#/components/parameters/XRequestId'
+      responses:
+        '200':
+          description: Кошельки клиента (AC-01). Содержит банковскую тайну — не кэшируется.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WalletList'
+              examples:
+                twoWallets:
+                  summary: Личный кошелёк и кошелёк ИП
+                  value:
+                    items:
+                      - walletId: 9c8b7a6d-5e4f-4321-8765-0fedcba98765
+                        ownerType: INDIVIDUAL
+                        status: ACTIVE
+                        walletNumberMasked: '0x****eAed'
+                      - walletId: 1d2e3f4a-5b6c-4d7e-8f90-a1b2c3d4e5f6
+                        ownerType: SOLE_PROPRIETOR
+                        status: ACTIVE
+                        walletNumberMasked: '0x****3b9C'
+                noWallets:
+                  summary: У клиента нет кошельков
+                  value:
+                    items: []
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '503':
+          $ref: '#/components/responses/PlatformUnavailable'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+
+  /wallets/{walletId}/top-up-source-accounts:
+    get:
+      operationId: listTopUpSourceAccounts
+      summary: Получить счета клиента, с которых можно пополнить кошелёк
+      description: |
+        Шаг 4 сценария SCRUM-2195. **Предусловие:** кошелёк принадлежит клиенту (BR-GEN-02).
+
+        **Что делает сервер (синхронно):** получает счета клиента из АБС — INT-ABS-02
+        (таймаут попытки 1 с, повтор `RP-EXP`) с типом владельца по типу кошелька и возвращает
+        только счета, с которых можно пополнить этот кошелёк (AC-02, FR-TOP-01):
+        - клиенту принадлежат, открыты, валюта RUB (BR-ACC-01, BR-ACC-02, BR-ACC-04);
+        - тип подходит к кошельку: для `INDIVIDUAL` — текущие счета физлица, для
+          `SOLE_PROPRIETOR` — расчётные счета ИП (BR-ACC-05);
+        - без ограничений на расходные операции (BR-ACC-03; допущение A-02).
+
+        Номер счёта — только в маске `MASK-ACCOUNT` (SD-API-04); доступный остаток — с учётом
+        блокировок (BR-ACC-06). Подходящих счетов нет — пустой список.
+
+        **Ошибки:** `404` — чужой или несуществующий кошелёк; `503 CORE_BANKING_UNAVAILABLE` /
+        `504 UPSTREAM_TIMEOUT` — АБС недоступна, повторы исчерпаны (AC-16, E1).
+        Критерии приёмки: AC-02, AC-16.
+      tags: [Wallet Top-up]
+      x-jira-key: SCRUM-2195
+      x-acceptance-criteria: [AC-02, AC-16]
+      x-business-rules: [BR-GEN-02, BR-ACC-01, BR-ACC-02, BR-ACC-03, BR-ACC-04, BR-ACC-05, BR-ACC-06, BR-TIME-03]
+      x-external-systems: [CORE_BANKING]
+      x-assumption: A-02 — счета с ограничениями на расходные операции в список не попадают (FR-TOP-01 «с которых можно пополнить»); AC-02 этого прямо не говорит.
+      parameters:
+        - $ref: '#/components/parameters/WalletId'
+        - $ref: '#/components/parameters/XRequestId'
+      responses:
+        '200':
+          description: Счета для пополнения выбранного кошелька (AC-02). Содержит банковскую тайну — не кэшируется.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SourceAccountList'
+              examples:
+                individual:
+                  summary: Счета для личного кошелька
+                  value:
+                    items:
+                      - accountId: 5b4a3c2d-1e0f-4a9b-8c7d-6e5f4a3b2c1d
+                        accountNumberMasked: '**** 0001'
+                        accountType: CURRENT
+                        availableBalance:
+                          value: '125000.00'
+                          currency: RUB
+                soleProprietor:
+                  summary: Расчётные счета для кошелька ИП
+                  value:
+                    items:
+                      - accountId: 8e7d6c5b-4a3f-4e2d-9c1b-0a9f8e7d6c5b
+                        accountNumberMasked: '**** 0002'
+                        accountType: SETTLEMENT
+                        availableBalance:
+                          value: '980000.50'
+                          currency: RUB
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '503':
+          $ref: '#/components/responses/CoreBankingUnavailable'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+
+  /wallets/{walletId}/top-up-limit:
+    get:
+      operationId: getWalletTopUpLimit
+      summary: Получить остаток лимита пополнения кошелька
+      description: |
+        Шаг 5 сценария SCRUM-2195. **Предусловие:** кошелёк принадлежит клиенту (BR-GEN-02).
+
+        **Личный кошелёк (`INDIVIDUAL`):** сервер получает лимит, сумму пополнений и остаток
+        у платформы — INT-DRP-05 (таймаут попытки 1,5 с, повтор `RP-EXP`). Лимит общий на
+        платформе, считается за скользящие 30 дней, учитывает и сумму операций в обработке;
+        модуль его не пересчитывает (AC-03, BR-DR-TOP-02, BR-DR-TOP-03, BR-DR-TOP-04, §8.4).
+
+        **Кошелёк ИП (`SOLE_PROPRIETOR`):** лимита нет — `limited = false` без сумм (AC-04,
+        BR-DR-TOP-02); платформа не вызывается (допущение A-03).
+
+        **Ошибки:** `404` — чужой или несуществующий кошелёк; `503 PLATFORM_UNAVAILABLE` /
+        `504 UPSTREAM_TIMEOUT` — платформа недоступна, повторы исчерпаны (AC-16, E1).
+        Критерии приёмки: AC-03, AC-04, AC-16.
+      tags: [Wallet Top-up]
+      x-jira-key: SCRUM-2195
+      x-acceptance-criteria: [AC-03, AC-04, AC-16]
+      x-business-rules: [BR-GEN-02, BR-DR-TOP-02, BR-DR-TOP-03, BR-DR-TOP-04, BR-TIME-03]
+      x-external-systems: [DR_PLATFORM]
+      x-assumption: A-03 — для кошелька ИП модуль отвечает без запроса к платформе, потому что лимит для бизнеса не установлен нормой (BR-DR-TOP-02).
+      parameters:
+        - $ref: '#/components/parameters/WalletId'
+        - $ref: '#/components/parameters/XRequestId'
+      responses:
+        '200':
+          description: Лимит пополнения (AC-03, AC-04). Содержит банковскую тайну — не кэшируется.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TopUpLimit'
+              examples:
+                individual:
+                  summary: Личный кошелёк — лимит 300 000 ₽ за 30 дней (AC-03)
+                  value:
+                    walletId: 9c8b7a6d-5e4f-4321-8765-0fedcba98765
+                    limited: true
+                    windowDays: 30
+                    limitAmount:
+                      value: '300000.00'
+                      currency: RUB
+                    usedAmount:
+                      value: '45000.00'
+                      currency: RUB
+                    remainingAmount:
+                      value: '255000.00'
+                      currency: RUB
+                soleProprietor:
+                  summary: Кошелёк ИП — лимит не установлен (AC-04)
+                  value:
+                    walletId: 1d2e3f4a-5b6c-4d7e-8f90-a1b2c3d4e5f6
+                    limited: false
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '503':
+          $ref: '#/components/responses/PlatformUnavailable'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+
+  /wallets/{walletId}/top-ups:
+    post:
+      operationId: createWalletTopUp
+      summary: Создать операцию пополнения кошелька с банковского счёта
+      description: |
+        Шаг 7 сценария SCRUM-2195. Распоряжение (кошелёк, счёт, сумма) подписано ключом ЭП
+        клиента на устройстве; модуль проверяет наличие подписи и передаёт её на платформу
+        без изменений (FR-GEN-07, NFR-SEC-05). Отдельного подтверждения кодом нет (FR-TOP-05).
+
+        **Синхронные проверки до блокировки суммы** (при отказе операция не создаётся):
+        1. Не больше 1 созданной операции пополнения в минуту на клиента, иначе
+           `429 TOO_MANY_REQUESTS` с `Retry-After` (AC-21, NFR-RATE-02). Запросы, на которые
+           модуль ответил ошибкой, в лимит не входят.
+        2. Формат: сумма больше нуля и не больше двух знаков после запятой, есть подпись —
+           иначе `400 VALIDATION_ERROR` с полем в `errors[]` (AC-11, BR-AMT-01, BR-AMT-02).
+        3. Кошелёк принадлежит клиенту — иначе `404` (BR-GEN-02); сертификат ключа проверки
+           ЭП в статусе `ISSUED` — иначе `403 CERTIFICATE_INVALID` (AC-13, §8.7).
+        4. Статус кошелька на платформе — INT-DRP-04 (1,5 с, `RP-EXP`): `BLOCKED_BY_CLIENT`
+           → `422 WALLET_BLOCKED`; ограничение на зачисление → `422 WALLET_RESTRICTED` (AC-12,
+           §8.2, BR-DR-RST-02…04). `CLOSING` и `CLOSED` → `422 WALLET_BLOCKED` (допущение A-04).
+        5. Актуальная версия договора на платформе — INT-DRP-02 (1,5 с, `RP-EXP`): клиент не
+           принял новую версию → `409 CONTRACT_REACCEPTANCE_REQUIRED` (AC-19, BR-DR-OPEN-09).
+        6. Счёт по данным АБС — INT-ABS-02 (1 с, `RP-EXP`): чужой → `403 ACCOUNT_NOT_OWNED`;
+           закрыт, ограничен, не рублёвый, не подходит по типу → `422 ACCOUNT_CLOSED`,
+           `ACCOUNT_RESTRICTED`, `ACCOUNT_CURRENCY_NOT_SUPPORTED`, `ACCOUNT_TYPE_NOT_SUPPORTED`
+           (AC-10, BR-ACC-01…05); доступный остаток меньше суммы → `422 INSUFFICIENT_FUNDS`
+           (AC-08, BR-ACC-06).
+        7. Для `INDIVIDUAL` — остаток лимита на платформе, INT-DRP-05 (1,5 с, `RP-EXP`): сумма
+           больше остатка → `422 TOP_UP_MONTHLY_LIMIT_EXCEEDED` с `remainingAmount` (AC-09,
+           BR-DR-TOP-02…04). Для `SOLE_PROPRIETOR` лимит не проверяется.
+        8. Антифрод — INT-AF-02 (500 мс, `RP-EXP`): повторы исчерпаны →
+           `503 SERVICE_UNAVAILABLE` с `Retry-After`, операция не создаётся (AC-20, E3, BR-AF-06).
+
+        Внешняя система недоступна на шагах 4–8, повторы исчерпаны → `503 PLATFORM_UNAVAILABLE`
+        / `CORE_BANKING_UNAVAILABLE` или `504 UPSTREAM_TIMEOUT`; операция не создаётся,
+        средства не блокируются (AC-16, E1).
+
+        **Ответ `202`** (операция принята, AC-05; решение антифрода получено синхронно —
+        OAS-ASYNC-04, BR-AF-02):
+        - антифрод `DENY` → операция сразу в `REJECTED`, `rejectReason =
+          OPERATION_DECLINED_BY_SECURITY`, без деталей (AC-14, BR-AF-03);
+        - `REVIEW` → `ON_REVIEW`, сумма не блокируется до решения проверки (AC-14, §8.4);
+        - `ALLOW` → блокировка суммы в АБС, INT-ABS-03 (1 с, без повтора — изменяющая операция),
+          затем отправка зачисления на платформу, INT-DRP-06 (асинхронно, приём 1,5 с) →
+          `PLATFORM_PROCESSING`. Если платформа не подтвердила приём за 1,5 с, ответ тот же:
+          исход уточняется асинхронно, повторная отправка без уточнения статуса запрещена
+          (E2, NFR-AV-03).
+
+        Отказ АБС при блокировке: `422 INSUFFICIENT_FUNDS` / `ACCOUNT_RESTRICTED` /
+        `ACCOUNT_CLOSED`; АБС недоступна → `503 CORE_BANKING_UNAVAILABLE`; таймаут блокировки →
+        `504 UPSTREAM_TIMEOUT` (допущение A-05). Операция не создаётся.
+
+        Повтор с тем же `Idempotency-Key` и тем же телом возвращает ту же операцию, повторной
+        блокировки и зачисления нет (AC-07, A10, BR-IDM-01). Ответы 5xx по ключу не
+        сохраняются: повтор выполняет запрос заново, включая антифрод (AC-20, BR-IDM-03).
+        Критерии приёмки: AC-05, AC-07…AC-14, AC-16, AC-19…AC-21.
+      tags: [Wallet Top-up]
+      x-jira-key: SCRUM-2195
+      x-acceptance-criteria: [AC-05, AC-07, AC-08, AC-09, AC-10, AC-11, AC-12, AC-13, AC-14, AC-16, AC-19, AC-20, AC-21]
+      x-business-rules: [BR-GEN-01, BR-GEN-02, BR-ACC-01, BR-ACC-02, BR-ACC-03, BR-ACC-04, BR-ACC-05, BR-ACC-06, BR-ACC-07, BR-AMT-01, BR-AMT-02, BR-AMT-03, BR-CNF-01, BR-IDM-01, BR-IDM-02, BR-IDM-03, BR-DR-TOP-01, BR-DR-TOP-02, BR-DR-TOP-03, BR-DR-TOP-04, BR-DR-TOP-05, BR-DR-TOP-06, BR-DR-OPS-01, BR-DR-OPEN-09, BR-AF-01, BR-AF-02, BR-AF-03, BR-AF-06, BR-TIME-03]
+      x-external-systems: [DR_PLATFORM, CORE_BANKING, ANTIFRAUD]
+      x-assumption: A-04 — кошелёк в CLOSING или CLOSED отклоняется кодом WALLET_BLOCKED; §8.2 запрещает пополнение в этих статусах, но код ошибки для них не задан (открытый вопрос 4).
+      parameters:
+        - $ref: '#/components/parameters/WalletId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/XRequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateWalletTopUpRequest'
+            examples:
+              topUp:
+                summary: Пополнение на 15 000 ₽ со счёта клиента (AC-05)
+                value:
+                  sourceAccountId: 5b4a3c2d-1e0f-4a9b-8c7d-6e5f4a3b2c1d
+                  amount:
+                    value: '15000.00'
+                    currency: RUB
+                  signature: MEQCIBrQx2V0ZXN0LXNpZ25hdHVyZS1zeW50aGV0aWM=
+      responses:
+        '202':
+          description: |
+            Операция принята к асинхронной обработке (AC-05) или сразу отклонена антифродом
+            (AC-14). Повтор с тем же `Idempotency-Key` возвращает этот же ответ (AC-07).
+          headers:
+            Location:
+              $ref: '#/components/headers/Location'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TopUp'
+              examples:
+                platformProcessing:
+                  summary: Сумма заблокирована, зачисление на платформе (AC-05)
+                  value:
+                    topUpId: 2c3d4e5f-6a7b-4c8d-9e0f-1a2b3c4d5e6f
+                    walletId: 9c8b7a6d-5e4f-4321-8765-0fedcba98765
+                    sourceAccountId: 5b4a3c2d-1e0f-4a9b-8c7d-6e5f4a3b2c1d
+                    amount:
+                      value: '15000.00'
+                      currency: RUB
+                    fee:
+                      value: '0.00'
+                      currency: RUB
+                    status: PLATFORM_PROCESSING
+                    createdAt: '2026-11-25T14:30:00+03:00'
+                onReview:
+                  summary: Нужна дополнительная проверка (AC-14)
+                  value:
+                    topUpId: 2c3d4e5f-6a7b-4c8d-9e0f-1a2b3c4d5e6f
+                    walletId: 9c8b7a6d-5e4f-4321-8765-0fedcba98765
+                    sourceAccountId: 5b4a3c2d-1e0f-4a9b-8c7d-6e5f4a3b2c1d
+                    amount:
+                      value: '15000.00'
+                      currency: RUB
+                    fee:
+                      value: '0.00'
+                      currency: RUB
+                    status: ON_REVIEW
+                    createdAt: '2026-11-25T14:30:00+03:00'
+                rejected:
+                  summary: Отклонено проверкой безопасности (AC-14)
+                  value:
+                    topUpId: 2c3d4e5f-6a7b-4c8d-9e0f-1a2b3c4d5e6f
+                    walletId: 9c8b7a6d-5e4f-4321-8765-0fedcba98765
+                    sourceAccountId: 5b4a3c2d-1e0f-4a9b-8c7d-6e5f4a3b2c1d
+                    amount:
+                      value: '15000.00'
+                      currency: RUB
+                    fee:
+                      value: '0.00'
+                      currency: RUB
+                    status: REJECTED
+                    rejectReason: OPERATION_DECLINED_BY_SECURITY
+                    createdAt: '2026-11-25T14:30:00+03:00'
+                    completedAt: '2026-11-25T14:30:01+03:00'
+        '400':
+          description: |
+            Некорректный запрос — `VALIDATION_ERROR`; поле — в `errors[]` (AC-11, BR-AMT-01,
+            BR-AMT-02): сумма не больше нуля, больше двух знаков после запятой, нет подписи.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+              example:
+                type: https://api.bank.example/problems/validation-error
+                title: Validation error
+                status: 400
+                code: VALIDATION_ERROR
+                traceId: 0af7651916cd43dd8448eb211c8032a0
+                errors:
+                  - field: amount.value
+                    code: INVALID_AMOUNT
+                    message: Сумма должна быть больше нуля, не более двух знаков после запятой.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: |
+            - `ACCOUNT_NOT_OWNED` — счёт не принадлежит клиенту (AC-10, BR-ACC-01);
+            - `CERTIFICATE_INVALID` — сертификат ключа проверки ЭП недействителен (AC-13, §8.7).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+              examples:
+                accountNotOwned:
+                  value:
+                    type: https://api.bank.example/problems/account-not-owned
+                    title: Account not owned
+                    status: 403
+                    code: ACCOUNT_NOT_OWNED
+                    traceId: 0af7651916cd43dd8448eb211c8032a1
+                certificateInvalid:
+                  value:
+                    type: https://api.bank.example/problems/certificate-invalid
+                    title: Certificate invalid
+                    status: 403
+                    code: CERTIFICATE_INVALID
+                    traceId: 0af7651916cd43dd8448eb211c8032a2
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: |
+            `CONTRACT_REACCEPTANCE_REQUIRED` — Банк России изменил договор, клиент не принял
+            новую версию; операции по кошельку заблокированы до принятия (AC-19, BR-DR-OPEN-09).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+              example:
+                type: https://api.bank.example/problems/contract-reacceptance-required
+                title: Contract reacceptance required
+                status: 409
+                code: CONTRACT_REACCEPTANCE_REQUIRED
+                traceId: 0af7651916cd43dd8448eb211c8032a3
+        '422':
+          description: |
+            Нарушено бизнес-правило, операция не создаётся:
+            - `ACCOUNT_CLOSED`, `ACCOUNT_RESTRICTED`, `ACCOUNT_CURRENCY_NOT_SUPPORTED`,
+              `ACCOUNT_TYPE_NOT_SUPPORTED` — счёт не подходит (AC-10, BR-ACC-02…05);
+            - `INSUFFICIENT_FUNDS` — недостаточно средств на счёте (AC-08, BR-ACC-06);
+            - `TOP_UP_MONTHLY_LIMIT_EXCEEDED` — сумма больше остатка лимита личного кошелька;
+              в `remainingAmount` — остаток (AC-09, BR-DR-TOP-02);
+            - `WALLET_BLOCKED`, `WALLET_RESTRICTED` — кошелёк недоступен для зачисления
+              (AC-12, §8.2);
+            - `IDEMPOTENCY_KEY_REUSED` — ключ уже использован с другим телом (BR-IDM-02).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/TopUpProblem'
+              examples:
+                insufficientFunds:
+                  summary: Недостаточно средств (AC-08)
+                  value:
+                    type: https://api.bank.example/problems/insufficient-funds
+                    title: Insufficient funds
+                    status: 422
+                    code: INSUFFICIENT_FUNDS
+                    traceId: 0af7651916cd43dd8448eb211c8032a4
+                limitExceeded:
+                  summary: Превышен лимит за 30 дней (AC-09)
+                  value:
+                    type: https://api.bank.example/problems/top-up-monthly-limit-exceeded
+                    title: Top-up limit exceeded
+                    status: 422
+                    code: TOP_UP_MONTHLY_LIMIT_EXCEEDED
+                    remainingAmount:
+                      value: '10000.00'
+                      currency: RUB
+                    traceId: 0af7651916cd43dd8448eb211c8032a5
+                accountTypeNotSupported:
+                  summary: Личный счёт для кошелька ИП (AC-10)
+                  value:
+                    type: https://api.bank.example/problems/account-type-not-supported
+                    title: Account type not supported
+                    status: 422
+                    code: ACCOUNT_TYPE_NOT_SUPPORTED
+                    traceId: 0af7651916cd43dd8448eb211c8032a6
+                walletBlocked:
+                  summary: Кошелёк заблокирован клиентом (AC-12)
+                  value:
+                    type: https://api.bank.example/problems/wallet-blocked
+                    title: Wallet blocked
+                    status: 422
+                    code: WALLET_BLOCKED
+                    traceId: 0af7651916cd43dd8448eb211c8032a7
+                idempotencyKeyReused:
+                  $ref: '#/components/examples/IdempotencyKeyReused'
+        '429':
+          description: |
+            Клиент уже создал операцию пополнения за последнюю минуту — `TOO_MANY_REQUESTS`;
+            в `Retry-After` — через сколько секунд можно повторить (AC-21, NFR-RATE-02).
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+              example:
+                type: https://api.bank.example/problems/too-many-requests
+                title: Too many requests
+                status: 429
+                code: TOO_MANY_REQUESTS
+                traceId: 0af7651916cd43dd8448eb211c8032a8
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '503':
+          description: |
+            Внешняя система недоступна, повторы исчерпаны; операция не создаётся, средства не
+            блокируются (AC-16, AC-20, E1, E3):
+            - `CORE_BANKING_UNAVAILABLE` — АБС (INT-ABS-02, INT-ABS-03);
+            - `PLATFORM_UNAVAILABLE` — платформа (INT-DRP-02, 04, 05);
+            - `SERVICE_UNAVAILABLE` — проверка безопасности; система клиенту не называется
+              (INT-AF-02, BR-AF-06).
+
+            Повторить можно с тем же `Idempotency-Key`: ответ 5xx не сохранён, запрос
+            выполняется заново, включая проверку антифрода (BR-IDM-03).
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+              examples:
+                serviceUnavailable:
+                  summary: Проверка безопасности недоступна (AC-20)
+                  value:
+                    type: https://api.bank.example/problems/service-unavailable
+                    title: Service unavailable
+                    status: 503
+                    code: SERVICE_UNAVAILABLE
+                    traceId: 0af7651916cd43dd8448eb211c8032a9
+                coreBankingUnavailable:
+                  summary: АБС недоступна (AC-16)
+                  value:
+                    type: https://api.bank.example/problems/core-banking-unavailable
+                    title: Core banking unavailable
+                    status: 503
+                    code: CORE_BANKING_UNAVAILABLE
+                    traceId: 0af7651916cd43dd8448eb211c8032aa
+                platformUnavailable:
+                  summary: Платформа недоступна (AC-16)
+                  value:
+                    type: https://api.bank.example/problems/platform-unavailable
+                    title: Platform unavailable
+                    status: 503
+                    code: PLATFORM_UNAVAILABLE
+                    traceId: 0af7651916cd43dd8448eb211c8032ab
+        '504':
+          description: |
+            Внешняя система не ответила, повторы исчерпаны — `UPSTREAM_TIMEOUT`; операция не
+            создаётся (AC-16, E1). При таймауте блокировки суммы (INT-ABS-03) — тот же ответ
+            (допущение A-05). Запрос можно повторить с тем же `Idempotency-Key` (BR-IDM-03).
+          x-assumption: A-05 — таймаут INT-ABS-03 возвращается клиенту как 504, операция не создаётся; сверку возможной блокировки модуль выполняет вне клиентского API (открытый вопрос 2).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+              example:
+                type: https://api.bank.example/problems/upstream-timeout
+                title: Upstream timeout
+                status: 504
+                code: UPSTREAM_TIMEOUT
+                traceId: 0af7651916cd43dd8448eb211c8032ac
+
+  /wallets/{walletId}/top-ups/{topUpId}:
+    get:
+      operationId: getWalletTopUp
+      summary: Получить операцию пополнения и её статус
+      description: |
+        Шаги 8–9 сценария SCRUM-2195: приложение опрашивает статус до финального; после
+        зачисления операция содержит баланс кошелька (AC-06, FR-TOP-07).
+
+        **Опрос:** рекомендуемый интервал — 2 с, максимальное время ожидания на клиенте — 60 с,
+        после чего приложение показывает «операция в обработке» (NFR-PERF-03). Не чаще 1 раза
+        в секунду на операцию, иначе `429` (NFR-RATE-03).
+
+        **Переходы, которые сервер выполняет без вызова клиента** (статусная модель §8.4):
+        - `ON_REVIEW` → `FUNDS_HELD` → `PLATFORM_PROCESSING` — проверка пройдена (INT-AF-03),
+          сумма заблокирована (INT-ABS-03), зачисление отправлено (INT-DRP-06);
+        - `ON_REVIEW` → `REJECTED` — `rejectReason = OPERATION_DECLINED_BY_SECURITY` (AC-14);
+          блокировка после проверки не прошла → `REJECTED` с причиной из АБС (допущение A-07);
+        - `PLATFORM_PROCESSING` → `COMPLETED` — платформа зачислила средства, модуль списал
+          блокировку в АБС (INT-ABS-04); в операции `walletBalanceAfter` и `completedAt`
+          (AC-06, BR-DR-TOP-06);
+        - `PLATFORM_PROCESSING` → `RELEASING_HOLD` → `FAILED` — платформа отказала, модуль снял
+          блокировку (INT-ABS-05); в операции `errorCode` (AC-15, BR-ACC-07);
+        - результат не получен за 30 с — операция остаётся в `PLATFORM_PROCESSING`, модуль
+          уточняет статус на платформе (INT-DRP-08) и без уточнения зачисление повторно не
+          отправляет (AC-17, E2, NFR-AV-03);
+        - сбой изменяющей операции АБС в асинхронной части (INT-ABS-03 после проверки,
+          INT-ABS-04, INT-ABS-05) — операция остаётся в текущем статусе, модуль дорабатывает
+          шаг (BR-TIME-03; допущение A-09).
+
+        Чужая или несуществующая операция — `404` (AC-18, BR-GEN-02). Внешние системы
+        в запросе не вызываются. Критерии приёмки: AC-06, AC-14, AC-15, AC-17, AC-18.
+      tags: [Wallet Top-up]
+      x-jira-key: SCRUM-2195
+      x-acceptance-criteria: [AC-06, AC-14, AC-15, AC-17, AC-18]
+      x-business-rules: [BR-GEN-02, BR-ACC-07, BR-AF-02, BR-AF-03, BR-DR-TOP-06, BR-DR-OPS-03, BR-TIME-03]
+      x-assumption: A-09 — изменяющие операции АБС без повтора (integrations, «Политика повтора»), поэтому при их сбое в асинхронной части операция не переходит в FAILED, а ждёт доработки шага модулем (открытый вопрос 5).
+      parameters:
+        - $ref: '#/components/parameters/WalletId'
+        - $ref: '#/components/parameters/TopUpId'
+        - $ref: '#/components/parameters/XRequestId'
+      responses:
+        '200':
+          description: Операция пополнения с текущим статусом. Содержит банковскую тайну — не кэшируется.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TopUp'
+              examples:
+                processing:
+                  summary: Зачисление на платформе, в том числе после таймаута (AC-17)
+                  value:
+                    topUpId: 2c3d4e5f-6a7b-4c8d-9e0f-1a2b3c4d5e6f
+                    walletId: 9c8b7a6d-5e4f-4321-8765-0fedcba98765
+                    sourceAccountId: 5b4a3c2d-1e0f-4a9b-8c7d-6e5f4a3b2c1d
+                    amount:
+                      value: '15000.00'
+                      currency: RUB
+                    fee:
+                      value: '0.00'
+                      currency: RUB
+                    status: PLATFORM_PROCESSING
+                    createdAt: '2026-11-25T14:30:00+03:00'
+                completed:
+                  summary: Средства зачислены (AC-06)
+                  value:
+                    topUpId: 2c3d4e5f-6a7b-4c8d-9e0f-1a2b3c4d5e6f
+                    walletId: 9c8b7a6d-5e4f-4321-8765-0fedcba98765
+                    sourceAccountId: 5b4a3c2d-1e0f-4a9b-8c7d-6e5f4a3b2c1d
+                    amount:
+                      value: '15000.00'
+                      currency: RUB
+                    fee:
+                      value: '0.00'
+                      currency: RUB
+                    status: COMPLETED
+                    walletBalanceAfter:
+                      value: '15000.00'
+                      currency: RUB
+                    balanceAsOf: '2026-11-25T14:30:03+03:00'
+                    createdAt: '2026-11-25T14:30:00+03:00'
+                    completedAt: '2026-11-25T14:30:03+03:00'
+                failed:
+                  summary: Платформа отказала, блокировка снята (AC-15)
+                  value:
+                    topUpId: 2c3d4e5f-6a7b-4c8d-9e0f-1a2b3c4d5e6f
+                    walletId: 9c8b7a6d-5e4f-4321-8765-0fedcba98765
+                    sourceAccountId: 5b4a3c2d-1e0f-4a9b-8c7d-6e5f4a3b2c1d
+                    amount:
+                      value: '15000.00'
+                      currency: RUB
+                    fee:
+                      value: '0.00'
+                      currency: RUB
+                    status: FAILED
+                    errorCode: WALLET_RESTRICTED
+                    createdAt: '2026-11-25T14:30:00+03:00'
+                    completedAt: '2026-11-25T14:30:04+03:00'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          description: Статус запрашивается чаще 1 раза в секунду — `TOO_MANY_REQUESTS` (NFR-RATE-03).
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+              example:
+                type: https://api.bank.example/problems/too-many-requests
+                title: Too many requests
+                status: 429
+                code: TOO_MANY_REQUESTS
+                traceId: 0af7651916cd43dd8448eb211c8032b0
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Токен доступа (JWT), выпущенный сервером авторизации банка; клиент определяется по токену (BR-GEN-01).
+  parameters:
+    XRequestId:
+      name: X-Request-Id
+      in: header
+      required: false
+      description: Сквозной идентификатор запроса для трассировки (NFR-OBS-01).
+      schema:
+        type: string
+        format: uuid
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: |
+        Ключ идемпотентности (UUID, без ПДн). Повтор с тем же ключом в течение 24 часов
+        возвращает исходный итоговый ответ и не выполняет действие повторно (BR-IDM-01,
+        NFR-AV-04). Повтор с тем же ключом и другим телом — `422 IDEMPOTENCY_KEY_REUSED`
+        (BR-IDM-02). Сохраняются только итоговые ответы (2xx, 4xx); ответы 5xx не сохраняются —
+        повтор выполняет запрос заново, включая проверку антифрода (BR-IDM-03).
+      schema:
+        type: string
+        format: uuid
+    WalletId:
+      name: walletId
+      in: path
+      required: true
+      description: Идентификатор кошелька клиента (из `listWallets`).
+      schema:
+        type: string
+        format: uuid
+    TopUpId:
+      name: topUpId
+      in: path
+      required: true
+      description: Идентификатор операции пополнения (из ответа `createWalletTopUp`).
+      schema:
+        type: string
+        format: uuid
+  headers:
+    CacheControlNoStore:
+      description: Ответ содержит конфиденциальные данные и не кэшируется (SD-API-10).
+      schema:
+        type: string
+        enum: [no-store]
+    Location:
+      description: URL ресурса операции пополнения.
+      schema:
+        type: string
+        format: uri
+    RetryAfter:
+      description: Через сколько секунд можно повторить запрос.
+      schema:
+        type: integer
+        minimum: 1
+    XRequestId:
+      description: Идентификатор запроса из `X-Request-Id` или сгенерированный сервером (NFR-OBS-01).
+      schema:
+        type: string
+        format: uuid
+  schemas:
+    OwnerType:
+      type: string
+      description: |
+        Тип кошелька: `INDIVIDUAL` — личный кошелёк физического лица; `SOLE_PROPRIETOR` —
+        кошелёк ИП для предпринимательской деятельности (FR-GEN-04). Определяет допустимые
+        счета-источники и наличие лимита пополнения.
+      enum: [INDIVIDUAL, SOLE_PROPRIETOR]
+    WalletStatus:
+      type: string
+      description: |
+        Статус кошелька (business-rules §8.2): `ACTIVE` — действует, пополнение возможно;
+        `BLOCKED_BY_CLIENT` — заблокирован клиентом, пополнение невозможно; `RESTRICTED` —
+        действуют ограничения, пополнение возможно, если нет запрета на зачисление;
+        `CLOSING` — закрывается; `CLOSED` — закрыт.
+      enum: [ACTIVE, BLOCKED_BY_CLIENT, RESTRICTED, CLOSING, CLOSED]
+    WalletSummary:
+      type: object
+      description: Кошелёк для выбора получателя пополнения (AC-01, FR-TOP-09). Без баланса (SD-API-01).
+      required: [walletId, ownerType, status, walletNumberMasked]
+      properties:
+        walletId:
+          type: string
+          format: uuid
+          readOnly: true
+          description: Идентификатор кошелька; используется в путях операций пополнения.
+        ownerType:
+          $ref: '#/components/schemas/OwnerType'
+        status:
+          $ref: '#/components/schemas/WalletStatus'
+        walletNumberMasked:
+          type: string
+          readOnly: true
+          pattern: '^0x\*{4}[a-fA-F0-9]{4}$'
+          description: Номер счёта цифрового рубля в маске `MASK-WALLET` — префикс `0x`, `****` и последние 4 символа (OAS-TYPE-13).
+          x-sensitivity: { level: C2, category: BANK_SECRECY, masking: MASK-WALLET, log: MASK-WALLET }
+    WalletList:
+      type: object
+      description: Кошельки клиента; не больше двух (BR-DR-OPEN-04, BR-DR-OPEN-05), поэтому без пагинации.
+      required: [items]
+      properties:
+        items:
+          type: array
+          maxItems: 2
+          description: Кошельки клиента; пустой массив, если кошельков нет.
+          items:
+            $ref: '#/components/schemas/WalletSummary'
+    SourceAccount:
+      type: object
+      description: Счёт клиента, с которого можно пополнить выбранный кошелёк (AC-02, FR-TOP-01).
+      required: [accountId, accountNumberMasked, accountType, availableBalance]
+      properties:
+        accountId:
+          type: string
+          format: uuid
+          readOnly: true
+          description: Непрозрачный идентификатор счёта; передаётся в `sourceAccountId` при создании пополнения (SD-API-03).
+        accountNumberMasked:
+          type: string
+          readOnly: true
+          pattern: '^\*{4} \d{4}$'
+          description: Номер счёта в маске `MASK-ACCOUNT` — последние 4 цифры.
+          x-sensitivity: { level: C2, category: BANK_SECRECY, masking: MASK-ACCOUNT, log: MASK-ACCOUNT }
+        accountType:
+          type: string
+          readOnly: true
+          description: |
+            Тип счёта: `CURRENT` — текущий счёт физического лица (для личного кошелька);
+            `SETTLEMENT` — расчётный счёт ИП (для кошелька ИП) (AC-02, BR-ACC-05).
+          enum: [CURRENT, SETTLEMENT]
+          x-assumption: A-06 — значения enum типа счёта заданы модулем; соответствие типам счетов АБС задаёт адаптер АБС.
+        availableBalance:
+          allOf:
+            - $ref: '#/components/schemas/Money'
+          description: Доступный остаток — остаток за вычетом блокировок (BR-ACC-06).
+          x-sensitivity: { level: C2, category: BANK_SECRECY, masking: MASK-NONE, log: MASK-HIDE }
+    SourceAccountList:
+      type: object
+      description: Счета для пополнения выбранного кошелька.
+      required: [items]
+      properties:
+        items:
+          type: array
+          description: Подходящие счета; пустой массив, если подходящих счетов нет.
+          items:
+            $ref: '#/components/schemas/SourceAccount'
+    TopUpLimit:
+      type: object
+      description: |
+        Лимит пополнения кошелька (BR-DR-TOP-02…04). Для личного кошелька — лимит, использовано
+        и остаток за скользящие 30 дней по данным платформы; для кошелька ИП — только
+        `limited = false`.
+      required: [walletId, limited]
+      properties:
+        walletId:
+          type: string
+          format: uuid
+          description: Идентификатор кошелька.
+        limited:
+          type: boolean
+          description: Установлен ли лимит пополнения; `true` — личный кошелёк (AC-03), `false` — кошелёк ИП (AC-04).
+        windowDays:
+          type: integer
+          enum: [30]
+          description: Период лимита в днях — скользящие 30 дней до момента запроса (BR-DR-TOP-04). Только при `limited = true`.
+        limitAmount:
+          allOf:
+            - $ref: '#/components/schemas/Money'
+          description: Лимит за период — 300 000,00 ₽ (BR-DR-TOP-02). Только при `limited = true`.
+        usedAmount:
+          allOf:
+            - $ref: '#/components/schemas/Money'
+          description: Сумма пополнений за период, включая операции в обработке (§8.4). Только при `limited = true`.
+          x-sensitivity: { level: C2, category: BANK_SECRECY, masking: MASK-NONE, log: MASK-HIDE }
+        remainingAmount:
+          allOf:
+            - $ref: '#/components/schemas/Money'
+          description: Остаток лимита за период. Только при `limited = true`.
+          x-sensitivity: { level: C2, category: BANK_SECRECY, masking: MASK-NONE, log: MASK-HIDE }
+    CreateWalletTopUpRequest:
+      type: object
+      additionalProperties: false
+      description: Распоряжение о пополнении кошелька, подписанное ключом ЭП клиента (FR-TOP-02, FR-GEN-07).
+      required: [sourceAccountId, amount, signature]
+      properties:
+        sourceAccountId:
+          type: string
+          format: uuid
+          description: Идентификатор счёта-источника клиента (из `listTopUpSourceAccounts`, BR-DR-TOP-01).
+        amount:
+          allOf:
+            - $ref: '#/components/schemas/Money'
+          description: Сумма пополнения в рублях; больше нуля, не более двух знаков после запятой (BR-AMT-01, BR-AMT-02). Цифровой рубль равен безналичному 1:1, курса нет (BR-AMT-03).
+          x-sensitivity: { level: C2, category: BANK_SECRECY, masking: MASK-NONE, log: MASK-HIDE }
+        signature:
+          type: string
+          format: byte
+          writeOnly: true
+          description: Подпись распоряжения ключом ЭП клиента, сформированная на устройстве, в Base64. Модуль передаёт её на платформу без изменений (NFR-SEC-05).
+          x-sensitivity: { level: C1, log: MASK-HASH }
+          x-assumption: A-08 — состав и формат подписываемых данных распоряжения задаёт платформа ЦР; в контракте зафиксировано только поле подписи (открытый вопрос 1).
+    TopUpStatus:
+      type: string
+      description: |
+        Статус операции пополнения (business-rules §8.4): `CREATED` — создана; `CHECKING` —
+        проверки; `ON_REVIEW` — дополнительная проверка; `FUNDS_HELD` — сумма заблокирована на
+        счёте; `PLATFORM_PROCESSING` — зачисление на платформе, в том числе уточнение статуса
+        после таймаута; `RELEASING_HOLD` — платформа отказала, снимается блокировка;
+        `COMPLETED` — зачислено, блокировка списана; `REJECTED` — отказ (см. `rejectReason`);
+        `FAILED` — зачисление не выполнено, блокировка снята (см. `errorCode`).
+        Финальные: `COMPLETED`, `REJECTED`, `FAILED`. `AWAITING_CONFIRMATION`, `EXPIRED`,
+        `CANCELLED` не используются: подтверждение отдельным шагом и отмена вне объёма
+        (§8.4, FR-TOP-05).
+      enum: [CREATED, CHECKING, ON_REVIEW, FUNDS_HELD, PLATFORM_PROCESSING, RELEASING_HOLD, COMPLETED, REJECTED, FAILED]
+    TopUp:
+      type: object
+      description: Операция пополнения кошелька. Деталей проверки антифрода не содержит (BR-AF-03, SD-API-15).
+      required: [topUpId, walletId, sourceAccountId, amount, fee, status, createdAt]
+      properties:
+        topUpId:
+          type: string
+          format: uuid
+          readOnly: true
+          description: Идентификатор операции пополнения.
+        walletId:
+          type: string
+          format: uuid
+          readOnly: true
+          description: Кошелёк-получатель.
+        sourceAccountId:
+          type: string
+          format: uuid
+          readOnly: true
+          description: Счёт-источник.
+        amount:
+          allOf:
+            - $ref: '#/components/schemas/Money'
+          description: Сумма пополнения.
+          x-sensitivity: { level: C2, category: BANK_SECRECY, masking: MASK-NONE, log: MASK-HIDE }
+        fee:
+          allOf:
+            - $ref: '#/components/schemas/Money'
+          description: Комиссия; пополнение бесплатно — всегда 0.00 RUB (BR-DR-TOP-05, FR-TOP-08).
+        status:
+          $ref: '#/components/schemas/TopUpStatus'
+        rejectReason:
+          type: string
+          readOnly: true
+          description: |
+            Причина отказа; только в статусе `REJECTED`.
+            `OPERATION_DECLINED_BY_SECURITY` — отклонено проверкой безопасности, без деталей
+            (AC-14, BR-AF-03); `INSUFFICIENT_FUNDS`, `ACCOUNT_RESTRICTED`, `ACCOUNT_CLOSED` —
+            блокировка суммы после дополнительной проверки не прошла (допущение A-07).
+          enum: [OPERATION_DECLINED_BY_SECURITY, INSUFFICIENT_FUNDS, ACCOUNT_RESTRICTED, ACCOUNT_CLOSED]
+          x-assumption: A-07 — если после ON_REVIEW блокировка в АБС отклонена, операция переходит в REJECTED с кодом отказа АБС; переход ON_REVIEW → REJECTED есть в §8.4, причины отказа АБС — по таблице соответствия integrations.md.
+        errorCode:
+          type: string
+          readOnly: true
+          description: |
+            Причина неуспешного зачисления; только в статусе `FAILED` (AC-15).
+            `TOP_UP_MONTHLY_LIMIT_EXCEEDED`, `WALLET_RESTRICTED` — платформа отказала в
+            зачислении (таблица соответствия ошибок платформы); `PLATFORM_UNAVAILABLE` —
+            платформа не получила зачисление, повторные отправки исчерпаны (допущение A-01).
+          enum: [TOP_UP_MONTHLY_LIMIT_EXCEEDED, WALLET_RESTRICTED, PLATFORM_UNAVAILABLE]
+          x-assumption: A-01 — повторных отправок INT-DRP-06 не больше 3, как для INT-DRP-03; после исчерпания блокировка снимается, операция FAILED (открытый вопрос 3).
+        walletBalanceAfter:
+          allOf:
+            - $ref: '#/components/schemas/Money'
+          description: Баланс кошелька после зачисления по данным платформы (AC-06, BR-DR-OPS-03); только в статусе `COMPLETED`.
+          x-sensitivity: { level: C2, category: BANK_SECRECY, masking: MASK-NONE, log: MASK-HIDE }
+        balanceAsOf:
+          type: string
+          format: date-time
+          readOnly: true
+          description: Момент, на который платформа сообщила баланс (BR-DR-OPS-03); только в статусе `COMPLETED`.
+        createdAt:
+          type: string
+          format: date-time
+          readOnly: true
+          description: Дата и время создания операции.
+        completedAt:
+          type: string
+          format: date-time
+          readOnly: true
+          description: Дата и время перехода в финальный статус; только в `COMPLETED`, `REJECTED`, `FAILED`.
+    Money:
+      type: object
+      description: Денежная сумма (OAS-TYPE-04).
+      required: [value, currency]
+      properties:
+        value:
+          type: string
+          pattern: '^\d{1,15}(\.\d{1,2})?$'
+          description: Сумма в рублях с точностью до копеек.
+        currency:
+          type: string
+          enum: [RUB]
+          description: Код валюты по ISO 4217.
+    Problem:
+      type: object
+      description: Ошибка в формате RFC 9457 (OAS-ERR-02).
+      required: [type, title, status, code]
+      properties:
+        type:
+          type: string
+          format: uri
+          description: URI типа ошибки.
+        title:
+          type: string
+          description: Краткое техническое описание типа ошибки; текст для клиента формирует приложение по `code` (NFR-CMP-03).
+        status:
+          type: integer
+          description: HTTP-код ответа.
+        detail:
+          type: string
+          description: Пояснение без ПДн, значений полей запроса и сведений о мерах ПОД/ФТ (SD-API-07).
+        instance:
+          type: string
+          description: Идентификатор конкретного случая ошибки.
+        code:
+          type: string
+          description: Бизнес-код ошибки из каталога business-rules §9.
+        traceId:
+          type: string
+          description: Идентификатор для поиска в журналах (NFR-OBS-02).
+        errors:
+          type: array
+          description: Ошибки валидации полей (только для 400).
+          items:
+            type: object
+            required: [field, code]
+            properties:
+              field:
+                type: string
+                description: Путь к полю в запросе.
+              code:
+                type: string
+                description: Код ошибки валидации.
+              message:
+                type: string
+                description: Пояснение.
+    TopUpProblem:
+      description: Ошибка создания пополнения с остатком лимита, которого требует AC-09.
+      allOf:
+        - $ref: '#/components/schemas/Problem'
+        - type: object
+          properties:
+            remainingAmount:
+              allOf:
+                - $ref: '#/components/schemas/Money'
+              description: Остаток лимита пополнения за скользящие 30 дней; только при `TOP_UP_MONTHLY_LIMIT_EXCEEDED` (AC-09, BR-DR-TOP-02).
+              x-sensitivity: { level: C2, category: BANK_SECRECY, masking: MASK-NONE, log: MASK-HIDE }
+  examples:
+    IdempotencyKeyReused:
+      summary: Ключ идемпотентности использован с другим телом (BR-IDM-02)
+      value:
+        type: https://api.bank.example/problems/idempotency-key-reused
+        title: Idempotency key reused
+        status: 422
+        code: IDEMPOTENCY_KEY_REUSED
+        traceId: 0af7651916cd43dd8448eb211c8032b1
+  responses:
+    BadRequest:
+      description: Некорректный запрос — `VALIDATION_ERROR`.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          example:
+            type: https://api.bank.example/problems/validation-error
+            title: Validation error
+            status: 400
+            code: VALIDATION_ERROR
+            traceId: 0af7651916cd43dd8448eb211c8032b2
+            errors:
+              - field: walletId
+                code: INVALID_FORMAT
+                message: Ожидается UUID.
+    Unauthorized:
+      description: Требуется аутентификация — `UNAUTHORIZED` (BR-GEN-01).
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          example:
+            type: https://api.bank.example/problems/unauthorized
+            title: Unauthorized
+            status: 401
+            code: UNAUTHORIZED
+            traceId: 0af7651916cd43dd8448eb211c8032b3
+    NotFound:
+      description: Ресурс не найден или принадлежит другому клиенту — `RESOURCE_NOT_FOUND` (AC-18, BR-GEN-02, OAS-ERR-07).
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          example:
+            type: https://api.bank.example/problems/resource-not-found
+            title: Resource not found
+            status: 404
+            code: RESOURCE_NOT_FOUND
+            traceId: 0af7651916cd43dd8448eb211c8032b4
+    InternalServerError:
+      description: Внутренняя ошибка сервера — `INTERNAL_ERROR`.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          example:
+            type: https://api.bank.example/problems/internal-error
+            title: Internal error
+            status: 500
+            code: INTERNAL_ERROR
+            traceId: 0af7651916cd43dd8448eb211c8032b5
+    PlatformUnavailable:
+      description: |
+        Платформа цифрового рубля недоступна, повторы `RP-EXP` исчерпаны — `PLATFORM_UNAVAILABLE`.
+        Повторить позже (AC-16, E1).
+      headers:
+        Retry-After:
+          $ref: '#/components/headers/RetryAfter'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          example:
+            type: https://api.bank.example/problems/platform-unavailable
+            title: Platform unavailable
+            status: 503
+            code: PLATFORM_UNAVAILABLE
+            traceId: 0af7651916cd43dd8448eb211c8032b6
+    CoreBankingUnavailable:
+      description: |
+        АБС недоступна, повторы `RP-EXP` исчерпаны — `CORE_BANKING_UNAVAILABLE`.
+        Повторить позже (AC-16, E1).
+      headers:
+        Retry-After:
+          $ref: '#/components/headers/RetryAfter'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          example:
+            type: https://api.bank.example/problems/core-banking-unavailable
+            title: Core banking unavailable
+            status: 503
+            code: CORE_BANKING_UNAVAILABLE
+            traceId: 0af7651916cd43dd8448eb211c8032b7
+    GatewayTimeout:
+      description: |
+        Внешняя система не ответила за отведённое время, повторы исчерпаны — `UPSTREAM_TIMEOUT`.
+        Повторить позже (AC-16, E1).
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          example:
+            type: https://api.bank.example/problems/upstream-timeout
+            title: Upstream timeout
+            status: 504
+            code: UPSTREAM_TIMEOUT
+            traceId: 0af7651916cd43dd8448eb211c8032b8
