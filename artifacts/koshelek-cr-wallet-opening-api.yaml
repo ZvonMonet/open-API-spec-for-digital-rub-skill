@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: КошелёкЦР — открытие кошелька цифрового рубля
-  version: 1.0.0
+  version: 1.1.0
   description: |
     Клиентский API модуля КошелёкЦР для открытия кошелька (счёта) цифрового рубля
     на платформе Банка России из мобильного приложения банка.
@@ -25,6 +25,8 @@ info:
     (NFR-SEC-03, SD-API-14). Вызовы внешних систем повторяются модулем по политике `RP-EXP`
     (экспоненциальная задержка с полным джиттером, 3 попытки; NFR-AV-05); после исчерпания
     повторов клиент получает `503` / `504`, статус заявки не меняется (NFR-AV-02, BR-TIME-03).
+    Исключение — асинхронная часть открытия счёта (INT-DRP-03): там техническая ошибка без
+    возможности повтора переводит заявку в `FAILED` с `errorCode` (§8.1, FR-OPEN-10).
 
     **Общее:** синхронные операции — не дольше 2 с (p95, NFR-PERF-01), кроме
     `startEsiaAuthorization` (до 64 с, таймаут клиента 70 с, NFR-PERF-05). Каждый `POST`
@@ -32,19 +34,10 @@ info:
     и закрытый ключ ЭП остаются на устройстве и в API не передаются (BR-DR-OPEN-10, 11).
 
     **Допущения** (подробно — в `koshelek-cr-wallet-opening-api-check.md`, раздел 7):
-    - A-01. Актуальность версии договора при принятии проверяется по версии, известной модулю
-      (полученной от платформы через INT-DRP-02), без отдельного вызова платформы.
-    - A-02. Сведения об ИП для шага 10 модуль читает из АБС (INT-ABS-01) синхронно в запросе
-      `submitCertificateRequest`.
-    - A-03. Решение антифрода получается синхронно в запросе `submitCertificateRequest`;
-      ответ `202` содержит заявку в статусе `PROCESSING`, `ON_REVIEW` или `REJECTED`.
-    - A-04. Если приём запроса на открытие счёта (INT-DRP-03) не подтверждён, модуль уточняет
-      статус (INT-DRP-08) и при неполучении платформой отправляет запрос повторно один раз
-      с тем же идентификатором операции.
-    - A-05. Формат номера кошелька и перечень алгоритмов ключа не заданы; поля описаны без
-      строгого формата.
-    - A-06. Условия перехода `PROCESSING` → `FAILED` в источниках не заданы; статус оставлен
-      в `enum` по статусной модели §8.1, поле `errorCode` не добавлено.
+    - A-07. Шаг 10: если запрос на открытие счёта (INT-DRP-03) не удалось доставить на платформу,
+      клиент получает `503 PLATFORM_UNAVAILABLE`, заявка остаётся в `KEYS_PENDING` (AC-17, E1).
+      Если запрос отправлен, но приём не подтверждён, заявка переходит в `PROCESSING`,
+      а уточнение статуса и повторные отправки выполняются асинхронно; при неудаче — `FAILED`.
   x-jira-keys: [SCRUM-2194, SCRUM-2196]
 servers:
   - url: https://api.bank.example/koshelek-cr/v1
@@ -65,6 +58,8 @@ paths:
         **Что делает сервер (синхронно):**
         1. Получает профиль клиента из АБС — INT-ABS-01 (таймаут попытки 1 с, повтор `RP-EXP`):
            уровень идентификации, признак блокировки, дата рождения, гражданство, признак ИП.
+           Для `SOLE_PROPRIETOR` сведения об ИП сохраняются в заявке и передаются на платформу
+           на шаге 10 без повторного запроса в АБС (FR-OPEN-09).
         2. Проверяет: клиент идентифицирован и не заблокирован (BR-GEN-03, BR-GEN-04);
            совершеннолетний гражданин РФ (BR-DR-OPEN-01); для `SOLE_PROPRIETOR` — клиент
            зарегистрирован в банке как ИП (BR-DR-OPEN-15).
@@ -276,7 +271,10 @@ paths:
         - `PROCESSING` → `REJECTED` — `CERTIFICATE_ISSUE_FAILED`, `WALLET_OPENING_REFUSED`
           (A9, BR-DR-OPEN-14, BR-AML-01) или `OPERATION_DECLINED_BY_SECURITY` (AC-14);
           детали проверок не раскрываются (BR-AF-03);
-        - `PROCESSING` → `FAILED` — техническая ошибка без возможности повтора (§8.1);
+        - `PROCESSING` → `FAILED` — техническая ошибка без возможности повтора (§8.1, FR-OPEN-10),
+          в заявке `errorCode`: `PLATFORM_UNAVAILABLE` — повторные отправки INT-DRP-03 (до 3)
+          исчерпаны или уточнение статуса INT-DRP-08 недоступно; `UPSTREAM_TIMEOUT` — результат
+          не получен за время ожидания и INT-DRP-08 его не уточнила;
         - `CREATED`, `ESIA_PENDING`, `CONTRACT_PENDING`, `KEYS_PENDING` → `EXPIRED` — заявка не
           завершена за 24 часа; дальнейшие шаги по ней невозможны (AC-19, NFR-RET-01).
 
@@ -503,23 +501,26 @@ paths:
         **Что делает сервер (синхронно):** проверяет явное согласие (`accepted: true`,
         BR-DR-OPEN-07) и актуальность `contractVersion`, фиксирует согласие с версией
         и временем принятия (AC-10, BR-DR-OPEN-08) и переводит заявку в `KEYS_PENDING`.
-        Внешние системы не вызываются: версия сверяется с актуальной версией, полученной
-        модулем от платформы (INT-DRP-02).
+        Актуальная версия запрашивается у платформы в этом же запросе — INT-DRP-02 (таймаут
+        попытки 1,5 с, повтор `RP-EXP`); версия, полученная на шаге 6, для сверки не используется:
+        новая версия может выйти между шагами 6 и 8 (AC-11, FR-OPEN-06).
 
         **Ошибки:** `409 CONTRACT_VERSION_OUTDATED` — Банк России опубликовал новую версию,
         согласие не принимается, приложение получает договор заново (AC-11, A7, BR-DR-OPEN-09);
         `409 INVALID_APPLICATION_STATE` — заявка не в `CONTRACT_PENDING` (в т. ч. `EXPIRED`,
-        AC-19); `422 IDEMPOTENCY_KEY_REUSED`.
+        AC-19); `422 IDEMPOTENCY_KEY_REUSED`; `503 PLATFORM_UNAVAILABLE` / `504 UPSTREAM_TIMEOUT` —
+        платформа недоступна, повторы исчерпаны, заявка остаётся в `CONTRACT_PENDING` (AC-17, E1).
 
         **Повтор после таймаута:** если сервер уже выполнил переход, а приложение не получило
         ответ, повтор с тем же `Idempotency-Key` возвращает сохранённый итоговый ответ
         (`200`, заявка в `KEYS_PENDING`), а не `409 INVALID_APPLICATION_STATE` (AC-20, E4,
-        BR-IDM-01). Критерии приёмки: AC-10, AC-11, AC-18, AC-19, AC-20.
+        BR-IDM-01). Ответы `5xx` по ключу не сохраняются (BR-IDM-03).
+        Критерии приёмки: AC-10, AC-11, AC-17, AC-18, AC-19, AC-20.
       tags: [Wallet Opening]
       x-jira-key: SCRUM-2194
-      x-acceptance-criteria: [AC-10, AC-11, AC-18, AC-19, AC-20]
-      x-business-rules: [BR-GEN-02, BR-DR-OPEN-07, BR-DR-OPEN-08, BR-DR-OPEN-09, BR-IDM-01, BR-IDM-02]
-      x-assumption: A-01. Актуальность версии проверяется по версии, известной модулю от платформы (INT-DRP-02), без вызова платформы в этом запросе — в Task у шага 8 нет [EXT].
+      x-acceptance-criteria: [AC-10, AC-11, AC-17, AC-18, AC-19, AC-20]
+      x-business-rules: [BR-GEN-02, BR-DR-OPEN-07, BR-DR-OPEN-08, BR-DR-OPEN-09, BR-IDM-01, BR-IDM-02, BR-IDM-03]
+      x-external-systems: [DR_PLATFORM]
       parameters:
         - $ref: '#/components/parameters/ApplicationId'
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -581,6 +582,10 @@ paths:
           $ref: '#/components/responses/IdempotencyKeyReused'
         '500':
           $ref: '#/components/responses/InternalServerError'
+        '503':
+          $ref: '#/components/responses/PlatformUnavailable'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
 
   /wallet-applications/{applicationId}/certificate-requests:
     post:
@@ -592,27 +597,33 @@ paths:
         на устройстве и в API отсутствует (AC-13, BR-DR-OPEN-10).
 
         **Синхронная часть:**
-        1. Для `SOLE_PROPRIETOR` — сведения об ИП из АБС, INT-ABS-01 (таймаут попытки 1 с,
-           повтор `RP-EXP`); дополнительных сведений от клиента не требуется (BR-DR-OPEN-15).
+        1. Для `SOLE_PROPRIETOR` используются сведения об ИП, сохранённые в заявке при её создании
+           (шаг 2, INT-ABS-01); АБС на этом шаге не вызывается, дополнительных сведений от клиента
+           не требуется (BR-DR-OPEN-15, FR-OPEN-09).
         2. Проверка заявки антифродом — INT-AF-01 (таймаут попытки 500 мс, повтор `RP-EXP`,
            BR-AF-01). `REVIEW` → `ON_REVIEW`; `DENY` → `REJECTED` с общей причиной
            `OPERATION_DECLINED_BY_SECURITY`, без деталей проверки (AC-14, BR-AF-02, BR-AF-03).
+           Ответ `202` с итоговым `REJECTED` допустим (BR-AF-02, OAS-ASYNC-04).
         3. При `ALLOW` — отправка запроса на выпуск сертификата и открытие счёта на платформу,
-           INT-DRP-03 (подтверждение приёма — 1,5 с). Повтор отправки — только после уточнения
-           статуса INT-DRP-08 (NFR-AV-03). Заявка — `PROCESSING`.
+           INT-DRP-03 (подтверждение приёма — 1,5 с). Заявка — `PROCESSING`.
 
         **Ответ:** `202` и заявка в статусе `PROCESSING`, `ON_REVIEW` или `REJECTED`; результат
         открытия — асинхронно, опросом `getWalletApplication` с интервалом 2 с (NFR-PERF-02,
-        NFR-PERF-03). Итог: `COMPLETED` с `walletId` (AC-15) или `REJECTED`
-        (`CERTIFICATE_ISSUE_FAILED`, `WALLET_OPENING_REFUSED`, A9).
+        NFR-PERF-03). Итог: `COMPLETED` с `walletId` (AC-15), `REJECTED`
+        (`CERTIFICATE_ISSUE_FAILED`, `WALLET_OPENING_REFUSED`, A9) или `FAILED` с `errorCode`.
+
+        **Асинхронная часть (после `202`):** если приём INT-DRP-03 не подтверждён или результат
+        не получен за 30 с, модуль уточняет статус (INT-DRP-08, повтор `RP-EXP`). Платформа
+        запрос не получила — повторная отправка с тем же id операции, не более 3 раз
+        (NFR-AV-03). Повторные отправки исчерпаны или INT-DRP-08 недоступна → `FAILED`
+        (`PLATFORM_UNAVAILABLE`); результат не уточнён за время ожидания → `FAILED`
+        (`UPSTREAM_TIMEOUT`); см. `getWalletApplication`.
 
         **Ошибки (заявка остаётся в `KEYS_PENDING`):**
         - `503 SERVICE_UNAVAILABLE` — проверка безопасности недоступна, повторы исчерпаны
           (AC-21, E3, BR-AF-06); ни ручная проверка, ни отказ не применяются;
-        - `503 PLATFORM_UNAVAILABLE` / `504 UPSTREAM_TIMEOUT` — платформа не подтвердила приём
-          (AC-17, E1);
-        - `503 CORE_BANKING_UNAVAILABLE` / `504 UPSTREAM_TIMEOUT` — АБС недоступна (только
-          `SOLE_PROPRIETOR`).
+        - `503 PLATFORM_UNAVAILABLE` — запрос INT-DRP-03 не удалось доставить на платформу
+          (AC-17, E1; допущение A-07).
         Ответы `5xx` по ключу идемпотентности не сохраняются: повтор с тем же `Idempotency-Key`
         выполняет запрос заново, включая проверку антифрода (BR-IDM-03).
 
@@ -623,8 +634,8 @@ paths:
       x-jira-key: SCRUM-2194
       x-acceptance-criteria: [AC-13, AC-14, AC-15, AC-17, AC-18, AC-19, AC-21]
       x-business-rules: [BR-GEN-02, BR-DR-OPEN-10, BR-DR-OPEN-14, BR-DR-OPEN-15, BR-AF-01, BR-AF-02, BR-AF-03, BR-AF-06, BR-AML-01, BR-IDM-01, BR-IDM-02, BR-IDM-03, BR-TIME-03]
-      x-external-systems: [CORE_BANKING, ANTIFRAUD, DR_PLATFORM]
-      x-assumption: A-02, A-03, A-04 (см. info.description и отчёт проверки).
+      x-external-systems: [ANTIFRAUD, DR_PLATFORM]
+      x-assumption: A-07. 503 PLATFORM_UNAVAILABLE — только если INT-DRP-03 не доставлен; неподтверждённый приём обрабатывается асинхронно (PROCESSING → FAILED).
       parameters:
         - $ref: '#/components/parameters/ApplicationId'
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -636,7 +647,7 @@ paths:
             schema:
               $ref: '#/components/schemas/SubmitCertificateRequestRequest'
             example:
-              csr: MIIBkTCCATcCAQAwVTELMAkGA1UEBhMCUlUxEzARBgNVBAMMClRlc3QgVXNlcjEx
+              csr: MIIBTzCB/QIBADBGMQswCQYDVQQGEwJSVTETMBEGA1UEAwwKVGVzdCBVc2Vy
               keyAlgorithm: GOST_R_34_10_2012_256
       responses:
         '202':
@@ -700,8 +711,8 @@ paths:
             запрос можно повторить с тем же `Idempotency-Key` (проверки выполняются заново,
             BR-IDM-03):
             - `SERVICE_UNAVAILABLE` — проверка безопасности (AC-21, E3, BR-AF-06);
-            - `PLATFORM_UNAVAILABLE` — платформа цифрового рубля (AC-17, E1);
-            - `CORE_BANKING_UNAVAILABLE` — АБС (только `SOLE_PROPRIETOR`).
+            - `PLATFORM_UNAVAILABLE` — запрос на открытие счёта не доставлен на платформу
+              (AC-17, E1, A-07).
           headers:
             Retry-After:
               $ref: '#/components/headers/RetryAfter'
@@ -726,16 +737,6 @@ paths:
                     status: 503
                     code: PLATFORM_UNAVAILABLE
                     traceId: 0af7651916cd43dd8448eb211c8031a6
-                coreBankingUnavailable:
-                  summary: АБС недоступна (кошелёк ИП)
-                  value:
-                    type: https://api.bank.example/problems/core-banking-unavailable
-                    title: Core banking unavailable
-                    status: 503
-                    code: CORE_BANKING_UNAVAILABLE
-                    traceId: 0af7651916cd43dd8448eb211c8031a7
-        '504':
-          $ref: '#/components/responses/GatewayTimeout'
 
   /wallet-applications/{applicationId}/cancel:
     post:
@@ -835,7 +836,7 @@ paths:
                 walletId: 9c8b7a6d-5e4f-4321-8765-0fedcba98765
                 ownerType: INDIVIDUAL
                 status: ACTIVE
-                walletNumberMasked: '**** 7788'
+                walletNumberMasked: '0x****eAed'
                 balance:
                   value: '0.00'
                   currency: RUB
@@ -935,10 +936,10 @@ components:
         `KEYS_PENDING` — ожидается запрос на сертификат; `PROCESSING` — проверки и открытие
         счёта на платформе; `ON_REVIEW` — дополнительная проверка; `COMPLETED` — кошелёк
         открыт; `REJECTED` — отказ (см. `rejectReason`); `CANCELLED` — отменена клиентом;
-        `EXPIRED` — истёк срок; `FAILED` — техническая ошибка без повтора. Финальные:
+        `EXPIRED` — истёк срок; `FAILED` — техническая ошибка без возможности повтора
+        (см. `errorCode`, FR-OPEN-10). Финальные:
         `COMPLETED`, `REJECTED`, `CANCELLED`, `EXPIRED`, `FAILED`.
       enum: [CREATED, ESIA_PENDING, CONTRACT_PENDING, KEYS_PENDING, PROCESSING, ON_REVIEW, COMPLETED, REJECTED, CANCELLED, EXPIRED, FAILED]
-      x-assumption: A-06. Условия перехода в `FAILED` не заданы в Task и контексте; статус включён по §8.1, поле `errorCode` не добавлено до уточнения.
     CreateWalletApplicationRequest:
       type: object
       additionalProperties: false
@@ -972,6 +973,15 @@ components:
             `WALLET_OPENING_REFUSED` — платформа или банк отказали в открытии счёта (A9,
             BR-DR-OPEN-14, BR-AML-01).
           enum: [ESIA_CONSENT_DENIED, ESIA_ACCOUNT_NOT_CONFIRMED, WALLET_ALREADY_EXISTS, OPERATION_DECLINED_BY_SECURITY, CERTIFICATE_ISSUE_FAILED, WALLET_OPENING_REFUSED]
+        errorCode:
+          type: string
+          readOnly: true
+          description: |
+            Причина технической ошибки; присутствует только в статусе `FAILED` (§8.1, FR-OPEN-10).
+            `PLATFORM_UNAVAILABLE` — платформа недоступна: повторные отправки запроса на открытие
+            счёта (до 3) исчерпаны или уточнение статуса недоступно; `UPSTREAM_TIMEOUT` — результат
+            не получен за время ожидания.
+          enum: [PLATFORM_UNAVAILABLE, UPSTREAM_TIMEOUT]
         expiresAt:
           type: string
           format: date-time
@@ -1016,8 +1026,7 @@ components:
         contractId:
           type: string
           maxLength: 64
-          description: Идентификатор договора на платформе.
-          x-assumption: A-05. Формат идентификатора договора на платформе не задан — строка.
+          description: Идентификатор договора на платформе; формат задаёт платформа (OAS-TYPE-10).
         contractVersion:
           type: string
           maxLength: 32
@@ -1054,15 +1063,15 @@ components:
       properties:
         csr:
           type: string
+          format: byte
           writeOnly: true
           maxLength: 8192
-          description: Запрос на сертификат ключа проверки ЭП (PKCS#10, Base64). Закрытый ключ не передаётся (BR-DR-OPEN-10).
+          description: Запрос на сертификат ключа проверки ЭП — PKCS#10 в кодировке DER, Base64 (OAS-TYPE-11). Содержит только открытый ключ; закрытый ключ не передаётся (BR-DR-OPEN-10).
           x-sensitivity: { level: C1, log: MASK-HASH }
         keyAlgorithm:
           type: string
-          maxLength: 64
-          description: Алгоритм ключа ЭП, созданного на устройстве.
-          x-assumption: A-05. Перечень допустимых алгоритмов не задан в источниках — строка без enum.
+          description: Алгоритм ключа ЭП, созданного на устройстве — ГОСТ Р 34.10-2012 с ключом 256 или 512 бит, хеш ГОСТ Р 34.11-2012 (OAS-TYPE-12).
+          enum: [GOST_R_34_10_2012_256, GOST_R_34_10_2012_512]
     Wallet:
       type: object
       description: Открытый кошелёк цифрового рубля (AC-16, FR-OPEN-13). Содержит банковскую тайну (C2).
@@ -1086,9 +1095,9 @@ components:
         walletNumberMasked:
           type: string
           readOnly: true
-          description: Номер счёта цифрового рубля, видны последние 4 символа (MASK-WALLET).
+          pattern: '^0x\*{4}[a-fA-F0-9]{4}$'
+          description: Номер счёта цифрового рубля (`0x` + 40 hex, OAS-TYPE-13) в маске `MASK-WALLET` — префикс `0x`, `****` и последние 4 символа.
           x-sensitivity: { level: C2, category: BANK_SECRECY, masking: MASK-WALLET, log: MASK-WALLET }
-          x-assumption: A-05. Формат номера счёта цифрового рубля не задан (sensitive-data §11) — без pattern.
         balance:
           allOf:
             - $ref: '#/components/schemas/Money'
