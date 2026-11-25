@@ -1,5 +1,5 @@
 @startuml koshelek-cr-wallet-top-up-sequence
-title КошелёкЦР — пополнение кошелька цифрового рубля с банковского счёта\nSCRUM-2195 / SCRUM-2197 · OAS koshelek-cr-wallet-top-up-api.yaml v1.0.0
+title КошелёкЦР — пополнение кошелька цифрового рубля с банковского счёта\nSCRUM-2195 / SCRUM-2197 · OAS koshelek-cr-wallet-top-up-api.yaml v1.1.0
 autonumber "<b>[00]"
 skinparam responseMessageBelowArrow true
 skinparam sequenceMessageAlign left
@@ -19,7 +19,8 @@ legend top left
   Пунктир — ответ; <b>[S]</b> — статус операции пополнения после шага.
   RP-EXP — повтор вызова внешней системы: 3 попытки (первая + 2 повтора), экспоненциальная задержка
   с полным джиттером, base 200 мс / cap 2 с; повторяются таймаут и недоступность, бизнес-отказы — нет (NFR-AV-05).
-  Изменяющие операции АБС (INT-ABS-03…05) и отправка зачисления (INT-DRP-06) — без повтора RP-EXP.
+  INT-ABS-03…05 идемпотентны по id операции / блокировки и повторяются по RP-EXP; асинхронные шаги
+  доделываются в окне W = 10 мин. Отправка зачисления (INT-DRP-06) — без повтора до уточнения INT-DRP-08.
   Ответы 5xx по Idempotency-Key не сохраняются: повтор с тем же ключом выполняется заново (BR-IDM-03).
 endlegend
 
@@ -36,6 +37,7 @@ alt повторы исчерпаны: платформа недоступна /
   M --> App : 503 PLATFORM_UNAVAILABLE, Retry-After\nили 504 UPSTREAM_TIMEOUT
 else успех (AC-01)
   M --> App : 200 items[]: walletId, ownerType, status,\nwalletNumberMasked (0x****XXXX); Cache-Control: no-store
+  note right of M : кошельки CLOSED не возвращаются (§8.2)
 end
 
 == Шаг 3. Выбор получателя [UI] ==
@@ -43,7 +45,7 @@ User -> App : выбирает кошелёк цифрового рубля
 
 == Шаг 4. Счета для пополнения ==
 App -> M : GET /wallets/{walletId}/top-up-source-accounts\n(listTopUpSourceAccounts)
-alt кошелёк не найден или чужой (BR-GEN-02)
+alt кошелёк не найден, чужой или закрыт (BR-GEN-02, §8.2)
   M --> App : 404 RESOURCE_NOT_FOUND
 else кошелёк клиента
   loop до 3 попыток [таймаут 1 с, RP-EXP — INT-ABS-02]
@@ -53,14 +55,14 @@ else кошелёк клиента
   alt повторы исчерпаны: АБС недоступна / таймаут (AC-16, E1)
     M --> App : 503 CORE_BANKING_UNAVAILABLE, Retry-After\nили 504 UPSTREAM_TIMEOUT
   else успех (AC-02)
-    note right of M : фильтр: свои, открытые, RUB, тип под кошелёк\n(INDIVIDUAL → CURRENT, SOLE_PROPRIETOR → SETTLEMENT);\nДопущение A-02: без ограничений на расход
-    M --> App : 200 items[]: accountId, accountNumberMasked (**** NNNN),\naccountType, availableBalance; Cache-Control: no-store
+    note right of M : фильтр: свои, открытые, RUB, тип под кошелёк\n(INDIVIDUAL → CURRENT, SOLE_PROPRIETOR → SETTLEMENT; Допущение A-06);\nограничение на расход → debitAllowed = false, без основания (SD-API-15)
+    M --> App : 200 items[]: accountId, accountNumberMasked (**** NNNN),\naccountType, availableBalance, debitAllowed; Cache-Control: no-store
   end
 end
 
 == Шаг 5. Лимит пополнения ==
 App -> M : GET /wallets/{walletId}/top-up-limit\n(getWalletTopUpLimit)
-alt кошелёк не найден или чужой (BR-GEN-02)
+alt кошелёк не найден, чужой или закрыт (BR-GEN-02, §8.2)
   M --> App : 404 RESOURCE_NOT_FOUND
 else кошелёк ИП — SOLE_PROPRIETOR (AC-04)
   note right of M : Допущение A-03: платформа не вызывается,\nлимита для бизнеса нет (BR-DR-TOP-02)
@@ -79,10 +81,11 @@ end
 
 == Шаг 6. Сумма и подпись [UI] ==
 User -> App : вводит сумму, подтверждает
-note over App : распоряжение подписывается ключом ЭП на устройстве;\nOTP не нужен (FR-TOP-05); пароль в API не передаётся (FR-GEN-06)
+note over App : подпись: CMS по ГОСТ Р 34.10-2012 над каноническим JSON\n(walletId, sourceAccountId, amount, Idempotency-Key) — BR-CNF-04;\nOTP не нужен (FR-TOP-05); пароль в API не передаётся (FR-GEN-06)
 
 == Шаг 7. Создание пополнения ==
 App -> M : POST /wallets/{walletId}/top-ups\n(createWalletTopUp)\nIdempotency-Key; sourceAccountId, amount, signature
+note right of App : таймаут API Gateway и клиента — 10 с (NFR-PERF-06)
 alt тот же Idempotency-Key, другое тело (BR-IDM-02)
   M --> App : 422 IDEMPOTENCY_KEY_REUSED
 else тот же Idempotency-Key, то же тело (AC-07, A10, BR-IDM-01)
@@ -91,24 +94,29 @@ else операция уже создана за последнюю минуту
   M --> App : 429 TOO_MANY_REQUESTS, Retry-After
 else сумма ≤ 0 или больше 2 знаков, нет подписи (AC-11, A3, BR-AMT-01, BR-AMT-02)
   M --> App : 400 VALIDATION_ERROR, errors[].field = amount.value
-else кошелёк не найден или чужой (BR-GEN-02)
+else кошелёк не найден, чужой или закрыт (BR-GEN-02, §8.2)
   M --> App : 404 RESOURCE_NOT_FOUND
 else сертификат ЭП не ISSUED (AC-13, A7, §8.7)
   M --> App : 403 CERTIFICATE_INVALID
+else подпись не прошла проверку по сертификату (BR-CNF-04)
+  M --> App : 422 SIGNATURE_INVALID
 else новый запрос
-  loop до 3 попыток [таймаут 1,5 с, RP-EXP — INT-DRP-04]
-    M -> DRP : INT-DRP-04 Данные кошелька
-    DRP --> M : статус, ограничения
-  end
-  loop до 3 попыток [таймаут 1,5 с, RP-EXP — INT-DRP-02]
-    M -> DRP : INT-DRP-02 Актуальный договор
-    DRP --> M : id и версия договора
-  end
-  loop до 3 попыток [таймаут 1 с, RP-EXP — INT-ABS-02]
-    M -> ABS : INT-ABS-02 Счета клиента
-    ABS --> M : счёт: владелец, статус, валюта, тип, доступный остаток
-  end
-  opt кошелёк INDIVIDUAL
+  par проверки параллельно (NFR-PERF-06)
+    loop до 3 попыток [таймаут 1,5 с, RP-EXP — INT-DRP-04]
+      M -> DRP : INT-DRP-04 Данные кошелька
+      DRP --> M : статус, ограничения
+    end
+  else
+    loop до 3 попыток [таймаут 1,5 с, RP-EXP — INT-DRP-02]
+      M -> DRP : INT-DRP-02 Актуальный договор
+      DRP --> M : id и версия договора
+    end
+  else
+    loop до 3 попыток [таймаут 1 с, RP-EXP — INT-ABS-02]
+      M -> ABS : INT-ABS-02 Счета клиента
+      ABS --> M : счёт: владелец, статус, валюта, тип, доступный остаток
+    end
+  else кошелёк INDIVIDUAL
     loop до 3 попыток [таймаут 1,5 с, RP-EXP — INT-DRP-05]
       M -> DRP : INT-DRP-05 Остаток лимита пополнения
       DRP --> M : остаток за 30 дней
@@ -116,9 +124,10 @@ else новый запрос
   end
   alt повторы исчерпаны: платформа или АБС недоступны / таймаут (AC-16, E1)
     M --> App : 503 PLATFORM_UNAVAILABLE / CORE_BANKING_UNAVAILABLE, Retry-After\nили 504 UPSTREAM_TIMEOUT; операция не создаётся, блокировки нет
-  else кошелёк BLOCKED_BY_CLIENT (AC-12, A6, §8.2)
+  else кошелёк BLOCKED_BY_CLIENT или CLOSING (AC-12, A6, §8.2)
     M --> App : 422 WALLET_BLOCKED
-    note right of M : Допущение A-04: CLOSING / CLOSED → тот же код
+  else кошелёк CLOSED по данным платформы (§8.2)
+    M --> App : 404 RESOURCE_NOT_FOUND
   else ограничение на зачисление (AC-12, A6, BR-DR-RST-02…04)
     M --> App : 422 WALLET_RESTRICTED
   else версия договора новее принятой (AC-19, A6a, BR-DR-OPEN-09)
@@ -134,7 +143,7 @@ else новый запрос
   else INDIVIDUAL: сумма больше остатка лимита (AC-09, A5, BR-DR-TOP-02)
     M --> App : 422 TOP_UP_MONTHLY_LIMIT_EXCEEDED, remainingAmount
   else проверки пройдены
-    note over M : <b>[S] CREATED</b> → <b>[S] CHECKING</b> (внутри запроса)
+    note over M : <b>[S] CREATED</b> (внутри запроса)
     loop до 3 попыток [таймаут 500 мс, RP-EXP — INT-AF-02]
       M -> AF : INT-AF-02 Оценка операции
       AF --> M : решение ALLOW / REVIEW / DENY
@@ -148,45 +157,35 @@ else новый запрос
       M --> App : 202, Location\n<b>[S] REJECTED</b> (OPERATION_DECLINED_BY_SECURITY), без деталей
     else REVIEW (AC-14, A8)
       M --> App : 202, Location\n<b>[S] ON_REVIEW</b>; сумма не блокируется до решения
-    else ALLOW
-      M -> ABS : INT-ABS-03 Блокировка суммы (id операции)
-      note right of M : без повтора — изменяющая операция АБС\n(integrations, «Политика повтора»)
-      alt АБС: недостаточно средств / ограничения / счёт закрыт
-        ABS --> M : отказ
-        M --> App : 422 INSUFFICIENT_FUNDS / ACCOUNT_RESTRICTED / ACCOUNT_CLOSED;\nоперация не создаётся
-      else АБС недоступна (E1)
-        M --> App : 503 CORE_BANKING_UNAVAILABLE, Retry-After; операция не создаётся
-      else таймаут 1 с (Допущение A-05)
-        M --> App : 504 UPSTREAM_TIMEOUT; операция не создаётся
-        note right of M : сверка возможной блокировки —\nвне клиентского API (открытый вопрос 2)
-      else блокировка установлена
-        ABS --> M : id блокировки
-        note over M : <b>[S] FUNDS_HELD</b>
-        M -> DRP : INT-DRP-06 Зачисление (асинхронно): кошелёк, сумма,\nid операции, подпись клиента без изменений
-        note right of M : без повтора до уточнения статуса INT-DRP-08\n(NFR-AV-03); приём — 1,5 с
-        M --> App : 202 Accepted, Location; Cache-Control: no-store\n<b>[S] PLATFORM_PROCESSING</b> (AC-05)
-        note right of M : приём не подтверждён за 1,5 с (E2) —\nответ тот же, исход уточняется асинхронно
-      end
+    else ALLOW (AC-05)
+      M --> App : 202 Accepted, Location; Cache-Control: no-store\n<b>[S] CHECKING</b>; блокировка и зачисление — после ответа (BR-DR-TOP-06)
     end
   end
 end
 
-== Асинхронная обработка (служебная, вне клиентского API) ==
+== Асинхронная обработка (служебная, вне клиентского API; окно W = 10 мин) ==
 opt операция в ON_REVIEW
   AF -> M : INT-AF-03 Решение по ручной проверке (событие)
   alt DECLINED (AC-14, BR-AF-03)
     note over M : <b>[S] REJECTED</b> (OPERATION_DECLINED_BY_SECURITY)
   else APPROVED
-    M -> ABS : INT-ABS-03 Блокировка суммы (без повтора)
-    alt АБС: отказ (Допущение A-07)
-      note over M : <b>[S] REJECTED</b> (INSUFFICIENT_FUNDS /\nACCOUNT_RESTRICTED / ACCOUNT_CLOSED)
-    else АБС недоступна / таймаут (Допущение A-09)
-      note over M : <b>[S] ON_REVIEW</b> сохраняется; модуль дорабатывает шаг
-    else блокировка установлена
-      note over M : <b>[S] FUNDS_HELD</b>
-      M -> DRP : INT-DRP-06 Зачисление (асинхронно)
-      note over M : <b>[S] PLATFORM_PROCESSING</b>
-    end
+    note over M : <b>[S] CHECKING</b>
+  end
+end
+opt операция в CHECKING
+  loop серии RP-EXP в окне W [таймаут 1 с — INT-ABS-03, идемпотентна по id операции]
+    M -> ABS : INT-ABS-03 Блокировка суммы (id операции)
+    ABS --> M : id блокировки (при повторе — тот же) или отказ
+  end
+  alt АБС: недостаточно средств / ограничения / счёт закрыт (AC-08, AC-10)
+    note over M : <b>[S] REJECTED</b> (INSUFFICIENT_FUNDS /\nACCOUNT_RESTRICTED / ACCOUNT_CLOSED)
+  else АБС недоступна дольше окна W (AC-16)
+    note over M : <b>[S] FAILED</b> (errorCode = CORE_BANKING_UNAVAILABLE);\nесли блокировка всё же поставлена — снятие после\nвосстановления АБС (INT-ABS-03 по id → INT-ABS-05)
+  else блокировка установлена
+    note over M : <b>[S] FUNDS_HELD</b>
+    M -> DRP : INT-DRP-06 Зачисление (асинхронно): кошелёк, сумма,\nid операции, подпись клиента без изменений
+    note right of M : без повтора до уточнения INT-DRP-08 (NFR-AV-03);\nплатформа отбрасывает дубли по id операции
+    note over M : <b>[S] PLATFORM_PROCESSING</b>
   end
 end
 loop пока операция в PLATFORM_PROCESSING
@@ -197,20 +196,13 @@ loop пока операция в PLATFORM_PROCESSING
         M -> DRP : INT-DRP-04 Данные кошелька
         DRP --> M : баланс после зачисления
       end
-      M -> ABS : INT-ABS-04 Списание блокировки (без повтора)
-      alt списание выполнено
-        note over M : <b>[S] COMPLETED</b>; walletBalanceAfter, balanceAsOf, completedAt
-      else АБС недоступна / таймаут (Допущение A-09)
-        note over M : <b>[S] PLATFORM_PROCESSING</b> сохраняется;\nмодуль дорабатывает списание
+      note over M : <b>[S] COMPLETED</b>; walletBalanceAfter, balanceAsOf, completedAt
+      loop серии RP-EXP в окне W [таймаут 1 с — INT-ABS-04, идемпотентна по id блокировки]
+        M -> ABS : INT-ABS-04 Списание блокировки (внутренний шаг банка)
       end
-    else отказ платформы (AC-15, A9)
-      note over M : платформа: превышен лимит / ограничения по кошельку →\nTOP_UP_MONTHLY_LIMIT_EXCEEDED / WALLET_RESTRICTED\n<b>[S] RELEASING_HOLD</b>
-      M -> ABS : INT-ABS-05 Снятие блокировки (без повтора)
-      alt блокировка снята
-        note over M : <b>[S] FAILED</b> (errorCode = TOP_UP_MONTHLY_LIMIT_EXCEEDED /\nWALLET_RESTRICTED), completedAt
-      else АБС недоступна / таймаут (Допущение A-09)
-        note over M : <b>[S] RELEASING_HOLD</b> сохраняется; модуль дорабатывает шаг
-      end
+      note right of M : окно W истекло — инцидент;\nстатус операции не меняется
+    else отказ платформы (AC-15, A9, BR-DR-TOP-07)
+      note over M : лимит / ограничения / прочее →\nTOP_UP_MONTHLY_LIMIT_EXCEEDED / WALLET_RESTRICTED /\nWALLET_CREDIT_REFUSED\n<b>[S] RELEASING_HOLD</b>
     end
   else приём не подтверждён или нет результата за 30 с (AC-17, E2, NFR-AV-03)
     loop до 3 попыток [таймаут 1,5 с, RP-EXP — INT-DRP-08]
@@ -221,13 +213,21 @@ loop пока операция в PLATFORM_PROCESSING
       note over M : <b>[S] PLATFORM_PROCESSING</b> сохраняется (AC-17);\nповторная отправка без уточнения запрещена
     else платформа: зачислено / отказ
       note over M : как «результат получен» выше
-    else платформа не получила зачисление, повторных отправок < 3 (Допущение A-01)
-      M -> DRP : INT-DRP-06 повторная отправка, тот же id операции
-    else платформа не получила, 3 повторные отправки исчерпаны (Допущение A-01)
-      note over M : <b>[S] RELEASING_HOLD</b>
-      M -> ABS : INT-ABS-05 Снятие блокировки
-      note over M : <b>[S] FAILED</b> (errorCode = PLATFORM_UNAVAILABLE)
+    else платформа не получила зачисление, окно W не истекло
+      M -> DRP : INT-DRP-06 повторная отправка, тот же id операции (серии RP-EXP)
+    else платформа не получила, окно W истекло
+      note over M : <b>[S] RELEASING_HOLD</b> (errorCode = PLATFORM_UNAVAILABLE)
     end
+  end
+end
+opt операция в RELEASING_HOLD
+  loop серии RP-EXP до снятия [таймаут 1 с — INT-ABS-05, идемпотентна по id блокировки]
+    M -> ABS : INT-ABS-05 Снятие блокировки
+  end
+  alt блокировка снята
+    note over M : <b>[S] FAILED</b> (errorCode = TOP_UP_MONTHLY_LIMIT_EXCEEDED /\nWALLET_RESTRICTED / WALLET_CREDIT_REFUSED / PLATFORM_UNAVAILABLE), completedAt
+  else окно W истекло
+    note over M : <b>[S] RELEASING_HOLD</b> сохраняется; инцидент, повторы продолжаются
   end
 end
 
@@ -239,7 +239,7 @@ loop каждые 2 с, не дольше 60 с [NFR-PERF-03]
   else операция не найдена или чужая (AC-18, BR-GEN-02)
     M --> App : 404 RESOURCE_NOT_FOUND
   else операция найдена
-    M --> App : 200 <b>[S] ON_REVIEW / FUNDS_HELD / PLATFORM_PROCESSING / RELEASING_HOLD</b>\n/ <b>COMPLETED</b> (walletBalanceAfter) / <b>REJECTED</b> (rejectReason) / <b>FAILED</b> (errorCode)
+    M --> App : 200 <b>[S] CHECKING / ON_REVIEW / FUNDS_HELD / PLATFORM_PROCESSING / RELEASING_HOLD</b>\n/ <b>COMPLETED</b> (walletBalanceAfter) / <b>REJECTED</b> (rejectReason) / <b>FAILED</b> (errorCode)
   end
 end
 note over App : через 60 с без финального статуса —\n«операция в обработке» (NFR-PERF-03)
